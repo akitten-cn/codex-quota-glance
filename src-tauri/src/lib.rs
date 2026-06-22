@@ -1,3 +1,5 @@
+use chrono::{Datelike, Local, TimeZone};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -11,6 +13,9 @@ const SETTINGS_TITLE: &str = "Codex Quota Glance 设置";
 const UPDATE_TITLE: &str = "Codex Quota Glance 更新";
 const GITHUB_LATEST_RELEASE_API_URL: &str =
     "https://api.github.com/repos/akitten-cn/codex-quota-glance/releases/latest";
+const QUOTA_UNITS_PER_CNY: f64 = 500_000.0;
+const INITIAL_SYNC_START: i64 = 1_780_243_200;
+const SYNC_OVERLAP_SECONDS: i64 = 300;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1084,18 +1089,304 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
 }
 
 fn local_api_newapi_summary() -> Value {
-    json!({
+    match get_newapi_log_summary() {
+        Ok(summary) => summary,
+        Err(error) => json!({
+            "ok": false,
+            "message": error,
+            "today": empty_usage_log(),
+            "all": empty_usage_log(),
+            "coverage": {
+                "complete": false
+            },
+            "sync": Value::Null
+        }),
+    }
+}
+
+fn get_newapi_log_summary() -> Result<Value, String> {
+    let database_path = newapi_database_path();
+    if let Some(parent) = database_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let connection = Connection::open(&database_path).map_err(|error| error.to_string())?;
+    init_newapi_database(&connection)?;
+    let (day_start, day_end) = local_day_window_seconds();
+    let sync = get_latest_newapi_sync_snapshot(&connection)?;
+
+    Ok(json!({
         "ok": true,
-        "today": empty_usage_log(),
-        "all": empty_usage_log(),
-        "coverage": {
-            "complete": false
-        },
-        "sync": {
-            "mode": "tauri-migration",
-            "backfillComplete": false
+        "today": summarize_newapi_rows(&connection, Some((day_start, day_end)))?,
+        "all": summarize_newapi_rows(&connection, None)?,
+        "latestCreatedAt": query_single_i64(&connection, "select max(created_at) from newapi_logs")?,
+        "coverage": get_newapi_log_coverage(&connection, sync.as_ref())?,
+        "sync": sync,
+        "account": get_latest_newapi_cache_snapshot(&connection, "newapi_account_cache")?,
+        "topup": get_latest_newapi_cache_snapshot(&connection, "newapi_topup_cache")?,
+        "database": database_path.to_string_lossy().to_string()
+    }))
+}
+
+fn newapi_database_path() -> PathBuf {
+    std::env::var_os("CODEX_QUOTA_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .map(|local| PathBuf::from(local).join("CodexQuotaGlance").join("data"))
+        })
+        .unwrap_or_else(|| PathBuf::from("data"))
+        .join("newapi-usage.sqlite3")
+}
+
+fn init_newapi_database(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"
+            create table if not exists newapi_logs (
+              unique_id text primary key,
+              provider_log_id text,
+              request_id text,
+              created_at integer not null,
+              token_name text,
+              model_name text,
+              group_name text,
+              input_tokens integer not null default 0,
+              cached_input_tokens integer not null default 0,
+              output_tokens integer not null default 0,
+              total_tokens integer not null default 0,
+              raw_used_amount integer not null default 0,
+              other_json text
+            );
+            create index if not exists idx_newapi_logs_created_at on newapi_logs(created_at);
+            create table if not exists newapi_sync_state (
+              sync_key text primary key,
+              base_url text not null,
+              api_user text,
+              key_fingerprint text,
+              latest_created_at integer,
+              last_synced_at integer,
+              fail_count integer default 0,
+              blocked_until integer,
+              backfill_until integer,
+              backfill_complete integer default 0,
+              backfill_warning text
+            );
+            create table if not exists newapi_account_cache (
+              account_key text primary key,
+              base_url text not null,
+              api_user text,
+              token_fingerprint text,
+              snapshot_json text not null,
+              updated_at integer not null
+            );
+            create table if not exists newapi_topup_cache (
+              topup_key text primary key,
+              base_url text not null,
+              api_user text,
+              token_fingerprint text,
+              snapshot_json text not null,
+              updated_at integer not null
+            );
+            "#,
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn summarize_newapi_rows(
+    connection: &Connection,
+    day_window: Option<(i64, i64)>,
+) -> Result<Value, String> {
+    let sql = match day_window {
+        Some(_) => {
+            r#"
+            select
+              count(*) as request_count,
+              coalesce(sum(input_tokens), 0) as input_tokens,
+              coalesce(sum(cached_input_tokens), 0) as cached_input_tokens,
+              coalesce(sum(output_tokens), 0) as output_tokens,
+              coalesce(sum(total_tokens), 0) as total_tokens,
+              coalesce(sum(raw_used_amount), 0) as raw_used_amount
+            from newapi_logs
+            where created_at >= ?1 and created_at < ?2
+            "#
         }
-    })
+        None => {
+            r#"
+            select
+              count(*) as request_count,
+              coalesce(sum(input_tokens), 0) as input_tokens,
+              coalesce(sum(cached_input_tokens), 0) as cached_input_tokens,
+              coalesce(sum(output_tokens), 0) as output_tokens,
+              coalesce(sum(total_tokens), 0) as total_tokens,
+              coalesce(sum(raw_used_amount), 0) as raw_used_amount
+            from newapi_logs
+            "#
+        }
+    };
+    let row = if let Some((start, end)) = day_window {
+        connection.query_row(sql, params![start, end], newapi_summary_from_row)
+    } else {
+        connection.query_row(sql, [], newapi_summary_from_row)
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(row)
+}
+
+fn newapi_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let request_count: i64 = row.get("request_count")?;
+    let input_tokens: i64 = row.get("input_tokens")?;
+    let cached_input_tokens: i64 = row.get("cached_input_tokens")?;
+    let output_tokens: i64 = row.get("output_tokens")?;
+    let total_tokens: i64 = row.get("total_tokens")?;
+    let raw_used_amount: i64 = row.get("raw_used_amount")?;
+    let cache_hit_rate = if input_tokens > 0 {
+        Some((cached_input_tokens as f64 / input_tokens as f64) * 100.0)
+    } else {
+        None
+    };
+    Ok(json!({
+        "requestCount": request_count,
+        "inputTokens": input_tokens,
+        "cachedInputTokens": cached_input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "rawUsedAmount": raw_used_amount,
+        "usedAmount": raw_used_amount as f64 / QUOTA_UNITS_PER_CNY,
+        "cacheHitRate": cache_hit_rate
+    }))
+}
+
+fn get_latest_newapi_sync_snapshot(connection: &Connection) -> Result<Option<Value>, String> {
+    let first_created_at = query_single_i64(connection, "select min(created_at) from newapi_logs")?;
+    let row = connection
+        .query_row(
+            r#"
+            select latest_created_at, last_synced_at, fail_count, blocked_until, backfill_until,
+                   backfill_complete, backfill_warning
+            from newapi_sync_state
+            order by last_synced_at desc
+            limit 1
+            "#,
+            [],
+            |row| {
+                let blocked_until: Option<i64> = row.get("blocked_until")?;
+                let backfill_until: Option<i64> = row.get("backfill_until")?;
+                let backfill_complete = row.get::<_, i64>("backfill_complete").unwrap_or(0) == 1;
+                let backfill_done = backfill_complete
+                    || backfill_until
+                        .zip(first_created_at)
+                        .map(|(backfill, first)| backfill >= first - SYNC_OVERLAP_SECONDS)
+                        .unwrap_or(false);
+                let mode = if blocked_until.is_some() {
+                    "backoff"
+                } else if backfill_until.is_some() && !backfill_done {
+                    "backfill"
+                } else {
+                    "incremental"
+                };
+                Ok(json!({
+                    "mode": mode,
+                    "latestCreatedAt": row.get::<_, Option<i64>>("latest_created_at")?,
+                    "lastSyncedAt": row.get::<_, Option<i64>>("last_synced_at")?,
+                    "failCount": row.get::<_, Option<i64>>("fail_count")?,
+                    "blockedUntil": blocked_until,
+                    "backfillUntil": backfill_until,
+                    "backfillComplete": backfill_complete,
+                    "backfillWarning": row.get::<_, Option<String>>("backfill_warning")?
+                }))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(row)
+}
+
+fn get_newapi_log_coverage(
+    connection: &Connection,
+    sync_snapshot: Option<&Value>,
+) -> Result<Value, String> {
+    let first = query_single_i64(connection, "select min(created_at) from newapi_logs")?;
+    let latest = query_single_i64(connection, "select max(created_at) from newapi_logs")?;
+    let scanned = sync_snapshot
+        .and_then(|value| value.get("backfillUntil"))
+        .and_then(Value::as_i64);
+    let backfill_complete = sync_snapshot
+        .and_then(|value| value.get("backfillComplete"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let warning = sync_snapshot
+        .and_then(|value| value.get("backfillWarning"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let complete_boundary = first.or(latest);
+    let complete = complete_boundary.is_some()
+        && warning.is_none()
+        && (backfill_complete
+            || first
+                .map(|value| value <= INITIAL_SYNC_START + SYNC_OVERLAP_SECONDS)
+                .unwrap_or(false)
+            || scanned
+                .zip(complete_boundary)
+                .map(|(scanned, boundary)| scanned >= boundary - SYNC_OVERLAP_SECONDS)
+                .unwrap_or(false));
+    let scanned_floor = scanned.unwrap_or(INITIAL_SYNC_START);
+    let missing_before_seconds = if complete {
+        0
+    } else {
+        (first.or(complete_boundary).unwrap_or(INITIAL_SYNC_START)
+            - INITIAL_SYNC_START.max(scanned_floor))
+        .max(0)
+    };
+
+    Ok(json!({
+        "complete": complete,
+        "firstCreatedAt": first,
+        "expectedStartAt": INITIAL_SYNC_START,
+        "scannedThroughAt": scanned,
+        "missingBeforeSeconds": missing_before_seconds,
+        "warning": warning
+    }))
+}
+
+fn get_latest_newapi_cache_snapshot(
+    connection: &Connection,
+    table: &str,
+) -> Result<Option<Value>, String> {
+    let sql = match table {
+        "newapi_account_cache" => {
+            "select snapshot_json from newapi_account_cache order by updated_at desc limit 1"
+        }
+        "newapi_topup_cache" => {
+            "select snapshot_json from newapi_topup_cache order by updated_at desc limit 1"
+        }
+        _ => return Err("不支持的 New API 缓存表".to_string()),
+    };
+    let snapshot = connection
+        .query_row(sql, [], |row| row.get::<_, String>("snapshot_json"))
+        .optional()
+        .map_err(|error| error.to_string())?
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    Ok(snapshot)
+}
+
+fn query_single_i64(connection: &Connection, sql: &str) -> Result<Option<i64>, String> {
+    connection
+        .query_row(sql, [], |row| row.get::<_, Option<i64>>(0))
+        .map_err(|error| error.to_string())
+}
+
+fn local_day_window_seconds() -> (i64, i64) {
+    let now = Local::now();
+    let start = Local
+        .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+        .earliest()
+        .map(|value| value.timestamp())
+        .unwrap_or_else(|| {
+            let today = current_utc_date_string();
+            parse_iso_timestamp_seconds(&format!("{today}T00:00:00+00:00")).unwrap_or(0)
+        });
+    (start, start + 86_400)
 }
 
 fn empty_usage_log() -> Value {

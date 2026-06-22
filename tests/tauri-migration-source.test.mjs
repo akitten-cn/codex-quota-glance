@@ -10,6 +10,10 @@ assert.equal(packageJson.scripts['tauri:build'], 'tauri build');
 assert.ok(packageJson.dependencies['@tauri-apps/api']);
 assert.ok(packageJson.devDependencies['@tauri-apps/cli']);
 
+const cargoToml = readFileSync(new URL('src-tauri/Cargo.toml', root), 'utf8');
+assert.match(cargoToml, /rusqlite/);
+assert.match(cargoToml, /chrono/);
+
 assert.ok(existsSync(new URL('src-tauri/Cargo.toml', root)));
 assert.ok(existsSync(new URL('src-tauri/tauri.conf.json', root)));
 assert.ok(existsSync(new URL('src-tauri/build.rs', root)));
@@ -49,6 +53,12 @@ assert.match(rustSource, /normalize_codex_rate_limits/);
 assert.match(rustSource, /get_codex_token_summary/);
 assert.match(rustSource, /summarize_codex_token_rows/);
 assert.doesNotMatch(rustSource, /"GET", "\/local-api\/codex\/token\/latest"\) => json!\(\{\s*"ok": true,\s*"available": false\s*\}\)/s);
+assert.match(rustSource, /get_newapi_log_summary/);
+assert.match(rustSource, /newapi_database_path/);
+assert.match(rustSource, /init_newapi_database/);
+assert.match(rustSource, /summarize_newapi_rows/);
+assert.match(rustSource, /get_latest_newapi_sync_snapshot/);
+assert.doesNotMatch(rustSource, /"mode": "tauri-migration",\s*"backfillComplete": false/s);
 assert.match(rustSource, /TrayIconBuilder::with_id/);
 assert.match(rustSource, /build_tray_menu/);
 assert.match(rustSource, /toggle_capsule_window/);
