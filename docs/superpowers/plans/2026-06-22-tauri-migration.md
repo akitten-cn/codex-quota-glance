@@ -100,4 +100,4 @@
 - [x] 启动 Tauri exe 做基础进程 smoke test。
 - [x] 对比 Tauri 包体积：主 exe 约 8.11 MB，NSIS 安装器约 2.70 MB，MSI 约 3.58 MB。
 - [ ] 做窗口/更新/红绿灯人工交互 smoke test。
-- [ ] 对比 Electron/Tauri 进程内存。
+- [x] 对比 Electron/Tauri 进程内存：Tauri release 约 24.7 MB；Electron legacy 新启动 node/electron 进程合计约 204.8 MB。
