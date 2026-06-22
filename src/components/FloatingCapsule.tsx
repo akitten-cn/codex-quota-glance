@@ -34,9 +34,7 @@ export default function FloatingCapsule({ snapshot, activity, expanded = false, 
         <span>{display.meta || display.subtitle}</span>
       </div>
       {updateAvailable && (
-        <span className="capsule-update-badge" title="发现新版本" aria-label="发现新版本">
-          ↑
-        </span>
+        <span className="capsule-update-badge" title="发现新版本" aria-label="发现新版本" />
       )}
     </button>
   );

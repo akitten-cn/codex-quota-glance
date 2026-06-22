@@ -18,6 +18,7 @@ const nodeTests = [
   'tests/capsule-stability-source.test.mjs',
   'tests/codex-activity-source.test.mjs',
   'tests/update-window-source.test.mjs',
+  'tests/tauri-migration-source.test.mjs',
   'tests/local-backend-source.test.mjs',
   'tests/detail-panel-source.test.mjs',
   'tests/style.test.mjs',

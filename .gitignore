@@ -23,3 +23,8 @@ dev-server.*.log
 Thumbs.db
 .codex-signal-glance-ref/
 docs/superpowers/
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/plans/
+docs/superpowers/plans/*
+!docs/superpowers/plans/2026-06-22-tauri-migration.md

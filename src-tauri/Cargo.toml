@@ -1,0 +1,28 @@
+[package]
+name = "codex-quota-glance"
+version = "0.1.9"
+description = "Windows floating quota and token usage monitor for Codex and New API providers."
+authors = ["akitten-cn"]
+license = "MIT"
+repository = "https://github.com/akitten-cn/codex-quota-glance"
+edition = "2021"
+rust-version = "1.77"
+build = "build.rs"
+
+[lib]
+name = "codex_quota_glance_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "codex-quota-glance"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.9.5", features = ["tray-icon", "image-ico"] }
+tauri-plugin-opener = "2.5.0"

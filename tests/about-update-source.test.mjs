@@ -35,7 +35,11 @@ assert.match(settingsSource, /settings-update-notice/);
 
 assert.match(capsuleSource, /updateAvailable\?:\s*boolean/);
 assert.match(capsuleSource, /capsule-update-badge/);
+assert.doesNotMatch(capsuleSource, /capsule-update-badge[\s\S]*鈫/);
 assert.match(cssSource, /\.capsule-update-badge/);
+assert.match(cssSource, /\.capsule-update-badge\s*{[\s\S]*width:\s*8px;/);
+assert.match(cssSource, /\.capsule-update-badge\s*{[\s\S]*height:\s*8px;/);
+assert.match(cssSource, /\.capsule-update-badge\s*{[\s\S]*background:\s*#ff9f0a;/);
 assert.match(cssSource, /\.update-tab-badge/);
 assert.match(cssSource, /\.settings-update-notice/);
 

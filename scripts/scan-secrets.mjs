@@ -19,6 +19,7 @@ const excludedDirectories = new Set([
   'release',
   'release-electron',
   'data',
+  'src-tauri/target',
   '__pycache__',
   '.codex-signal-glance-ref',
   'docs/superpowers'

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default desktop permissions for Codex Quota Glance.",
+  "windows": [
+    "*"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default"
+  ]
+}

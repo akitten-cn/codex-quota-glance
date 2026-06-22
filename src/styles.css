@@ -213,20 +213,15 @@ body:has(.detail-window-shell) {
 
 .capsule-update-badge {
   position: absolute;
-  top: -5px;
-  right: 10px;
-  min-width: 18px;
-  height: 18px;
-  display: inline-grid;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.36);
+  top: 8px;
+  right: 12px;
+  width: 8px;
+  height: 8px;
+  display: block;
+  border: 1px solid rgba(255, 255, 255, 0.42);
   border-radius: 999px;
-  color: #fff7ed;
-  background: linear-gradient(180deg, #f97316, #ea580c);
-  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.18), 0 6px 16px rgba(17, 24, 39, 0.22);
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1;
+  background: #ff9f0a;
+  box-shadow: 0 0 0 2px rgba(255, 159, 10, 0.16), 0 0 8px rgba(255, 159, 10, 0.42);
   pointer-events: none;
 }
 

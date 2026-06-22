@@ -13,18 +13,22 @@
   "bugs": {
     "url": "https://github.com/akitten-cn/codex-quota-glance/issues"
   },
+  "packageManager": "pnpm@11.5.3",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
     "test": "node scripts/run-tests.mjs",
     "dev": "vite",
     "build": "vite build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
     "electron": "vite build && electron .",
     "dist": "node scripts/clean-generated.mjs && vite build && electron-builder --win",
     "dist:win": "node scripts/clean-generated.mjs && vite build && electron-builder --win",
     "clean:generated": "node scripts/clean-generated.mjs",
     "scan:secrets": "node scripts/scan-secrets.mjs",
-    "ci": "npm run scan:secrets && npm test && npm run build"
+    "ci": "pnpm run scan:secrets && pnpm test && pnpm run build"
   },
   "build": {
     "appId": "cn.akitten.codexQuotaGlance",
@@ -87,10 +91,12 @@
     ]
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.3",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
