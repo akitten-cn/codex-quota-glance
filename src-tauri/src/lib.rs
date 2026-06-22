@@ -7,7 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, Window,
+};
 
 const SETTINGS_TITLE: &str = "Codex Quota Glance 设置";
 const UPDATE_TITLE: &str = "Codex Quota Glance 更新";
@@ -16,6 +19,10 @@ const GITHUB_LATEST_RELEASE_API_URL: &str =
 const QUOTA_UNITS_PER_CNY: f64 = 500_000.0;
 const INITIAL_SYNC_START: i64 = 1_780_243_200;
 const SYNC_OVERLAP_SECONDS: i64 = 300;
+const CAPSULE_WINDOW_PAD: u32 = 24;
+const RESERVED_TOAST_SPACE: u32 = 56;
+const DETAIL_GAP: i32 = 10;
+const SCREEN_MARGIN: i32 = 8;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,17 +118,105 @@ fn desktop_toast_open(_open: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn desktop_layout_update(_layout: Value) -> Result<(), String> {
+fn desktop_layout_update(app: AppHandle, window: Window, layout: Value) -> Result<(), String> {
+    let capsule = layout.get("capsule").unwrap_or(&Value::Null);
+    let capsule_width = value_u32(capsule.get("width"), 160).max(1);
+    let capsule_height = value_u32(capsule.get("height"), 44).max(1);
+    let toast_height = layout
+        .get("toast")
+        .and_then(|toast| toast.get("height"))
+        .map(|value| value_u32(Some(value), 0))
+        .unwrap_or(0);
+    let width = capsule_width + CAPSULE_WINDOW_PAD;
+    let height = capsule_height + RESERVED_TOAST_SPACE.max(toast_height) + CAPSULE_WINDOW_PAD;
+    window
+        .set_size(Size::Physical(PhysicalSize { width, height }))
+        .map_err(|error| error.to_string())?;
+    emit_window_layout(&app, "bottom")?;
+    let _ = position_detail_window(&app);
     Ok(())
 }
 
 #[tauri::command]
-fn desktop_detail_layout_update(_layout: Value) -> Result<(), String> {
+fn desktop_detail_layout_update(
+    app: AppHandle,
+    window: Window,
+    layout: Value,
+) -> Result<(), String> {
+    let width = value_u32(layout.get("width"), 520).max(320);
+    let height = value_u32(layout.get("height"), 180).max(120);
+    window
+        .set_size(Size::Physical(PhysicalSize { width, height }))
+        .map_err(|error| error.to_string())?;
+    let _ = position_detail_window(&app);
     Ok(())
 }
 
 #[tauri::command]
-fn desktop_saved_position(_position: Value) -> Result<(), String> {
+fn desktop_saved_position(window: Window, position: Value) -> Result<(), String> {
+    let x = value_i32(position.get("x"), 0);
+    let y = value_i32(position.get("y"), 0);
+    window
+        .set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|error| error.to_string())
+}
+
+fn position_detail_window(app: &AppHandle) -> Result<(), String> {
+    let Some(capsule) = app.get_webview_window("capsule") else {
+        return Ok(());
+    };
+    let Some(detail) = app.get_webview_window("detail") else {
+        return Ok(());
+    };
+    let capsule_position = capsule
+        .outer_position()
+        .map_err(|error| error.to_string())?;
+    let capsule_size = capsule.outer_size().map_err(|error| error.to_string())?;
+    let detail_size = detail.outer_size().map_err(|error| error.to_string())?;
+    let monitor = capsule
+        .current_monitor()
+        .map_err(|error| error.to_string())?;
+    let (screen_x, screen_y, screen_width, screen_height) = monitor
+        .map(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            (
+                position.x,
+                position.y,
+                size.width as i32,
+                size.height as i32,
+            )
+        })
+        .unwrap_or((0, 0, 1920, 1080));
+    let detail_width = detail_size.width as i32;
+    let detail_height = detail_size.height as i32;
+    let capsule_width = capsule_size.width as i32;
+    let capsule_height = capsule_size.height as i32;
+    let below_space = screen_y + screen_height - (capsule_position.y + capsule_height);
+    let placement = if below_space >= detail_height + DETAIL_GAP + SCREEN_MARGIN {
+        "bottom"
+    } else {
+        "top"
+    };
+    let x = clamp_i32(
+        capsule_position.x + (capsule_width - detail_width) / 2,
+        screen_x + SCREEN_MARGIN,
+        screen_x + screen_width - detail_width - SCREEN_MARGIN,
+    );
+    let y = if placement == "bottom" {
+        capsule_position.y + capsule_height + DETAIL_GAP
+    } else {
+        capsule_position.y - detail_height - DETAIL_GAP
+    };
+    let y = clamp_i32(
+        y,
+        screen_y + SCREEN_MARGIN,
+        screen_y + screen_height - detail_height - SCREEN_MARGIN,
+    );
+    detail
+        .set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|error| error.to_string())?;
+    emit_window_layout(app, placement)?;
     Ok(())
 }
 
@@ -345,6 +440,23 @@ fn emit_all(app: &AppHandle, event: &str, payload: Value) -> Result<(), String> 
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn emit_window_layout(app: &AppHandle, placement: &str) -> Result<(), String> {
+    let layout = json!({
+        "placement": if placement == "top" { "top" } else { "bottom" },
+        "offsetX": 0,
+        "offsetY": 0,
+        "detailOffset": 0,
+        "popoverShiftX": 0,
+        "ready": true
+    });
+    emit_all(
+        app,
+        "desktop-popover-placement",
+        json!(layout["placement"].clone()),
+    )?;
+    emit_all(app, "desktop-window-layout", layout)
 }
 
 fn trusted_update_asset(asset: &Value) -> Result<(String, String, Option<u64>), String> {
@@ -1696,6 +1808,25 @@ fn number_or_zero(value: Option<&Value>) -> u64 {
 
 fn number_or_zero_i64(value: Option<&Value>) -> i64 {
     number_or_option(value).unwrap_or(0.0).max(0.0).trunc() as i64
+}
+
+fn value_u32(value: Option<&Value>, fallback: u32) -> u32 {
+    number_or_option(value)
+        .map(|value| value.max(0.0).round() as u32)
+        .unwrap_or(fallback)
+}
+
+fn value_i32(value: Option<&Value>, fallback: i32) -> i32 {
+    number_or_option(value)
+        .map(|value| value.round() as i32)
+        .unwrap_or(fallback)
+}
+
+fn clamp_i32(value: i32, min: i32, max: i32) -> i32 {
+    if max < min {
+        return min;
+    }
+    value.max(min).min(max)
 }
 
 fn number_or_option(value: Option<&Value>) -> Option<f64> {
