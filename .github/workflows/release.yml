@@ -28,6 +28,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -37,8 +40,8 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Build Electron release
-        run: pnpm run dist:win -- --publish never
+      - name: Build Tauri release
+        run: pnpm run dist:win
 
       - name: Extract release notes
         run: node scripts/extract-release-notes.mjs "${{ github.ref_name }}" release-notes.md
@@ -48,18 +51,14 @@ jobs:
         with:
           name: CodexQuotaGlance-win-release
           path: |
-            dist-electron/*.exe
-            dist-electron/*.zip
-            dist-electron/*.blockmap
-            dist-electron/latest.yml
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           body_path: release-notes.md
           files: |
-            dist-electron/*.exe
-            dist-electron/*.zip
-            dist-electron/*.blockmap
-            dist-electron/latest.yml
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
           generate_release_notes: true

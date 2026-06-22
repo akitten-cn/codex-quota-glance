@@ -140,47 +140,57 @@ Codex Quota Glance.exe
 需要：
 
 - Node.js 24 或更高版本
+- Rust stable
 - Windows 10/11
 
 安装依赖：
 
 ```powershell
-npm install
+pnpm install
 ```
 
 运行测试：
 
 ```powershell
-npm test
+pnpm test
 ```
 
 开发浏览器预览：
 
 ```powershell
-npm run dev
+pnpm run dev
 ```
 
-Electron 开发运行：
+Tauri 桌面开发运行：
 
 ```powershell
-npm run electron
+pnpm run tauri:dev
+```
+
+Electron legacy 开发运行：
+
+```powershell
+pnpm run electron
 ```
 
 打包 Windows 发布版：
 
 ```powershell
-npm run dist:win
+pnpm run dist:win
 ```
 
 输出：
 
 ```text
-dist-electron\CodexQuotaGlance-<version>-win-x64.exe
-dist-electron\CodexQuotaGlance-<version>-win-x64-portable.exe
-dist-electron\CodexQuotaGlance-<version>-win-x64.zip
+src-tauri\target\release\bundle\nsis\*.exe
+src-tauri\target\release\bundle\msi\*.msi
 ```
 
-其中 `.exe` 安装包为 NSIS 安装版，`portable.exe` 为单文件便携版，`.zip` 为绿色版。
+其中 NSIS `.exe` 为推荐安装包；MSI 作为 Windows Installer 备用安装包。Electron legacy 打包仍保留：
+
+```powershell
+pnpm run dist:win:electron
+```
 
 ## CI/CD 和发布
 
@@ -189,7 +199,7 @@ dist-electron\CodexQuotaGlance-<version>-win-x64.zip
 - `.github/workflows/ci.yml`
   - push / pull request 时运行密钥扫描、测试和前端构建。
 - `.github/workflows/release.yml`
-  - 推送 `v*` tag 时在 Windows runner 上打包 Electron 应用并创建 GitHub Release。
+  - 推送 `v*` tag 时在 Windows runner 上打包 Tauri 应用并创建 GitHub Release。
 
 发布新版本：
 
@@ -201,9 +211,8 @@ git push origin v0.1.0
 GitHub Actions 会生成：
 
 ```text
-CodexQuotaGlance-<version>-win-x64.exe
-CodexQuotaGlance-<version>-win-x64-portable.exe
-CodexQuotaGlance-<version>-win-x64.zip
+NSIS .exe 安装包
+MSI 安装包
 ```
 
 ## 安全和隐私
@@ -238,11 +247,12 @@ npm run clean:generated
 
 ## 安装包和更新检测
 
-当前发布形式由 `electron-builder` 生成：
+当前默认发布形式由 Tauri 生成：
 
 - NSIS 安装包
-- 单文件便携版
-- 绿色 zip
+- MSI 安装包
+
+Electron legacy 打包脚本仍保留，主要用于迁移期回退验证。
 
 应用会使用 GitHub Releases 作为更新源，在设置的“关于”页中可手动检查：
 
@@ -250,7 +260,7 @@ npm run clean:generated
 https://api.github.com/repos/akitten-cn/codex-quota-glance/releases/latest
 ```
 
-如果发现新版本，会弹出提醒；用户选择“本次运行不再提醒”后，本次运行内不会再次弹出，但关于页仍会显示更新状态。
+如果发现新版本，会在设置“关于”页和胶囊本体显示更新提示；点击更新会打开更新窗口并开始下载最新 GitHub Release 安装包。
 
 ## 开源协议
 

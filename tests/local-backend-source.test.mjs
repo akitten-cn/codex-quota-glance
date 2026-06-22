@@ -24,7 +24,7 @@ assert.match(mainSource, /stopLocalBackend/);
 assert.doesNotMatch(mainSource, /local-server\.py/);
 assert.doesNotMatch(mainSource, /local-server\.exe/);
 assert.doesNotMatch(mainSource, /spawn\(backend\.command/);
-assert.equal(packageJson.scripts['dist:win'], 'node scripts/clean-generated.mjs && vite build && electron-builder --win');
+assert.equal(packageJson.scripts['dist:win:electron'], 'node scripts/clean-generated.mjs && vite build && electron-builder --win');
 assert.equal(packageJson.scripts['build:sidecar'], undefined);
 assert.equal(packageJson.build.files.includes('local-server.exe'), false);
 

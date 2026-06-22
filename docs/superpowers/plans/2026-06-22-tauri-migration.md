@@ -87,9 +87,9 @@
 - Modify: `.github/workflows/release.yml`
 - Modify: `README.md`
 
-- [ ] 将默认 `dist`/Release workflow 从 Electron 切到 Tauri。
-- [ ] 保留 Electron legacy 脚本，直到 Tauri 本地 API 功能完整。
-- [ ] 更新 README 的安装包说明和本地开发命令。
+- [x] 将默认 `dist`/Release workflow 从 Electron 切到 Tauri。
+- [x] 保留 Electron legacy 脚本，直到 Tauri 本地 API 功能完整。
+- [x] 更新 README 的安装包说明和本地开发命令。
 
 ### Task 7: 完整验证
 

@@ -24,8 +24,11 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "electron": "vite build && electron .",
-    "dist": "node scripts/clean-generated.mjs && vite build && electron-builder --win",
-    "dist:win": "node scripts/clean-generated.mjs && vite build && electron-builder --win",
+    "electron:dev": "vite build && electron .",
+    "dist": "pnpm run tauri:build",
+    "dist:win": "pnpm run tauri:build",
+    "dist:electron": "node scripts/clean-generated.mjs && vite build && electron-builder --win",
+    "dist:win:electron": "node scripts/clean-generated.mjs && vite build && electron-builder --win",
     "clean:generated": "node scripts/clean-generated.mjs",
     "scan:secrets": "node scripts/scan-secrets.mjs",
     "ci": "pnpm run scan:secrets && pnpm test && pnpm run build"

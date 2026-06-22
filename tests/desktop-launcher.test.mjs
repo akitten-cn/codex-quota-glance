@@ -17,8 +17,10 @@ const detailWindowSource = electronMain.slice(
 
 assert.equal(packageJson.main, 'electron/main.cjs');
 assert.match(packageJson.scripts.electron, /electron \./);
-assert.equal(packageJson.scripts.dist, 'node scripts/clean-generated.mjs && vite build && electron-builder --win');
-assert.equal(packageJson.scripts['dist:win'], 'node scripts/clean-generated.mjs && vite build && electron-builder --win');
+assert.equal(packageJson.scripts.dist, 'pnpm run tauri:build');
+assert.equal(packageJson.scripts['dist:win'], 'pnpm run tauri:build');
+assert.equal(packageJson.scripts['dist:electron'], 'node scripts/clean-generated.mjs && vite build && electron-builder --win');
+assert.equal(packageJson.scripts['dist:win:electron'], 'node scripts/clean-generated.mjs && vite build && electron-builder --win');
 assert.equal(packageJson.build.asar, true);
 assert.equal(packageJson.scripts.desktop, undefined);
 assert.equal(packageJson.scripts['package-electron'], undefined);
@@ -97,6 +99,6 @@ assert.doesNotMatch(electronMain, /local-server\.py/);
 assert.doesNotMatch(electronMain, /local-server\.exe/);
 assert.doesNotMatch(readme, /npm run package-electron/);
 assert.match(readme, /npm run dist:win/);
-assert.match(readme, /dist-electron\\CodexQuotaGlance-<version>-win-x64\.exe/);
+assert.match(readme, /src-tauri\\target\\release\\bundle\\nsis\\.*\.exe/);
 
 console.log('desktop launcher tests passed');
