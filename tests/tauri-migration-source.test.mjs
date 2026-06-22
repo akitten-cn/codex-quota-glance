@@ -13,6 +13,10 @@ assert.ok(packageJson.devDependencies['@tauri-apps/cli']);
 const cargoToml = readFileSync(new URL('src-tauri/Cargo.toml', root), 'utf8');
 assert.match(cargoToml, /rusqlite/);
 assert.match(cargoToml, /chrono/);
+assert.match(cargoToml, /\[profile\.release\]/);
+assert.match(cargoToml, /strip\s*=\s*true/);
+assert.match(cargoToml, /lto\s*=\s*true/);
+assert.match(cargoToml, /opt-level\s*=\s*"z"/);
 
 assert.ok(existsSync(new URL('src-tauri/Cargo.toml', root)));
 assert.ok(existsSync(new URL('src-tauri/tauri.conf.json', root)));
