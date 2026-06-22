@@ -66,7 +66,7 @@
 - [x] 迁移 Codex token latest/summary 的真实统计。
 - [x] 迁移 New API logs summary 的 SQLite 读取和汇总。
 - [x] 迁移 New API diagnose 的 HTTP 诊断逻辑。
-- [ ] 迁移 New API logs sync 的 HTTP 同步逻辑。
+- [x] 迁移 New API logs sync 的 HTTP 同步逻辑。
 - [x] 迁移 `/newapi-proxy`。
 
 ### Task 5: 胶囊更新提醒 UI

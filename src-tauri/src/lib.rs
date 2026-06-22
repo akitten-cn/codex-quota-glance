@@ -54,14 +54,9 @@ async fn local_api_request(request: LocalApiRequest) -> Result<Value, String> {
         ("GET", "/local-api/codex/token/latest") => get_latest_codex_token_usage(),
         ("GET", "/local-api/codex/token/summary") => get_codex_token_summary(),
         ("GET", "/local-api/newapi/logs/summary") => local_api_newapi_summary(),
-        ("POST", "/local-api/newapi/logs/sync") => json!({
-            "ok": true,
-            "mode": "tauri-migration",
-            "fetched": 0,
-            "inserted": 0,
-            "message": "Tauri 本地日志同步正在迁移中",
-            "summary": local_api_newapi_summary()
-        }),
+        ("POST", "/local-api/newapi/logs/sync") => {
+            sync_newapi_logs(request.body.as_deref().unwrap_or("{}")).await
+        }
         ("POST", "/local-api/newapi/diagnose") => {
             diagnose_newapi_user_self(request.body.as_deref().unwrap_or("{}")).await
         }
@@ -598,6 +593,442 @@ async fn diagnose_newapi_user_self(body: &str) -> Value {
             "dataKeys": data_keys
         }
     })
+}
+
+async fn sync_newapi_logs(body: &str) -> Value {
+    match sync_newapi_logs_inner(body).await {
+        Ok(value) => value,
+        Err(error) => json!({
+            "ok": false,
+            "message": error,
+            "summary": local_api_newapi_summary()
+        }),
+    }
+}
+
+async fn sync_newapi_logs_inner(body: &str) -> Result<Value, String> {
+    let payload = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+    let base_url = trim_trailing_slash(string_field(&payload, "baseUrl"));
+    let access_token = string_field(&payload, "accessToken");
+    let api_key = string_field(&payload, "apiKey");
+    let api_user = string_field(&payload, "newApiUser");
+    let token_name = string_field(&payload, "tokenName");
+    let sync_secret = if !access_token.trim().is_empty() {
+        access_token.trim().to_string()
+    } else {
+        api_key.trim().to_string()
+    };
+    if base_url.is_empty() || sync_secret.is_empty() {
+        return Err("baseUrl and apiKey/accessToken are required".to_string());
+    }
+
+    let database_path = newapi_database_path();
+    if let Some(parent) = database_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut connection = Connection::open(&database_path).map_err(|error| error.to_string())?;
+    init_newapi_database(&connection)?;
+    let sync_key = make_newapi_sync_key(&base_url, &api_user, &sync_secret);
+    let latest = get_newapi_latest_created_at(&connection, &sync_key)?.or(query_single_i64(
+        &connection,
+        "select max(created_at) from newapi_logs",
+    )?);
+    let start = latest
+        .map(|value| (value - SYNC_OVERLAP_SECONDS).max(0))
+        .unwrap_or(INITIAL_SYNC_START);
+    let end = number_or_option(payload.get("endTimestamp"))
+        .map(|value| value.trunc() as i64)
+        .unwrap_or_else(|| unix_now_seconds() as i64);
+    let page_size = number_or_option(payload.get("pageSize"))
+        .map(|value| value.trunc() as i64)
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let log_window_cap = number_or_option(payload.get("logWindowCap"))
+        .map(|value| value.trunc() as usize)
+        .unwrap_or(1000);
+
+    let mut mode = if latest.is_some() {
+        "incremental"
+    } else {
+        "initial"
+    }
+    .to_string();
+    let mut fetched = 0_usize;
+    let mut page = 1_i64;
+    let mut page_limit_reached = false;
+    let mut inserted_rows = Vec::new();
+
+    if !access_token.trim().is_empty() {
+        loop {
+            let data = fetch_newapi_self_log_page(
+                &base_url,
+                &access_token,
+                &api_user,
+                &token_name,
+                page,
+                page_size,
+                start,
+                end,
+            )
+            .await?;
+            let items = normalize_newapi_log_items(&data);
+            if items.is_empty() {
+                break;
+            }
+            fetched += items.len();
+            inserted_rows.extend(insert_newapi_logs(&mut connection, &items)?);
+            if items.len() < page_size as usize {
+                break;
+            }
+            page += 1;
+            if page > 500 {
+                page_limit_reached = true;
+                break;
+            }
+        }
+    } else {
+        mode = "fallback-token".to_string();
+        let data = fetch_newapi_token_log_page(&base_url, &api_key, &api_user).await?;
+        let items = normalize_newapi_log_items(&data);
+        fetched = items.len();
+        inserted_rows = insert_newapi_logs(&mut connection, &items)?;
+    }
+
+    let newest = query_single_i64(&connection, "select max(created_at) from newapi_logs")?;
+    save_newapi_sync_state(
+        &connection,
+        &sync_key,
+        &base_url,
+        &api_user,
+        &sync_secret,
+        newest,
+    )?;
+    let capped = fetched >= log_window_cap || page_limit_reached;
+    let backfill_warning = if capped {
+        Some("some log windows reached the platform cap; logs may be truncated")
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "ok": true,
+        "mode": mode,
+        "startTimestamp": start,
+        "endTimestamp": end,
+        "pages": page,
+        "fetched": fetched,
+        "inserted": inserted_rows.len(),
+        "capped": capped,
+        "backfillWarning": backfill_warning,
+        "insertedUsage": summarize_newapi_log_rows(&inserted_rows),
+        "summary": local_api_newapi_summary()
+    }))
+}
+
+async fn fetch_newapi_self_log_page(
+    base_url: &str,
+    access_token: &str,
+    api_user: &str,
+    token_name: &str,
+    page: i64,
+    page_size: i64,
+    start: i64,
+    end: i64,
+) -> Result<Value, String> {
+    let url = build_newapi_self_log_url(base_url, token_name, page, page_size, start, end)?;
+    fetch_newapi_json(&url, access_token, api_user, "log sync failed").await
+}
+
+async fn fetch_newapi_token_log_page(
+    base_url: &str,
+    api_key: &str,
+    api_user: &str,
+) -> Result<Value, String> {
+    let mut url = reqwest::Url::parse(&format!("{}/api/log/token", trim_trailing_slash(base_url)))
+        .map_err(|error| error.to_string())?;
+    url.query_pairs_mut().append_pair("key", api_key);
+    fetch_newapi_json(url.as_str(), api_key, api_user, "token log sync failed").await
+}
+
+fn build_newapi_self_log_url(
+    base_url: &str,
+    token_name: &str,
+    page: i64,
+    page_size: i64,
+    start: i64,
+    end: i64,
+) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(&format!("{}/api/log/self", trim_trailing_slash(base_url)))
+        .map_err(|error| error.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("p", &page.to_string())
+        .append_pair("page_size", &page_size.to_string())
+        .append_pair("type", "0")
+        .append_pair("token_name", token_name)
+        .append_pair("model_name", "")
+        .append_pair("start_timestamp", &start.to_string())
+        .append_pair("end_timestamp", &end.to_string())
+        .append_pair("group", "")
+        .append_pair("request_id", "");
+    Ok(url.to_string())
+}
+
+async fn fetch_newapi_json(
+    url: &str,
+    token: &str,
+    api_user: &str,
+    label: &str,
+) -> Result<Value, String> {
+    let mut builder = reqwest::Client::new().get(url);
+    for (name, value) in newapi_auth_headers(token, api_user, false) {
+        builder = builder.header(name, value);
+    }
+    let response = builder.send().await.map_err(|error| error.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|error| error.to_string())?;
+    if status.as_u16() == 429 {
+        return Err("rate limited".to_string());
+    }
+    if status.as_u16() >= 400 {
+        return Err(format!(
+            "{}: HTTP {} {}",
+            label,
+            status.as_u16(),
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|_| format!("{}: invalid JSON", label))
+}
+
+#[derive(Clone)]
+struct NewApiLogRow {
+    unique_id: String,
+    provider_log_id: Option<String>,
+    request_id: Option<String>,
+    created_at: i64,
+    token_name: Option<String>,
+    model_name: Option<String>,
+    group_name: Option<String>,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
+    raw_used_amount: i64,
+    other_json: Option<String>,
+}
+
+fn normalize_newapi_log_items(payload: &Value) -> Vec<Value> {
+    if let Some(items) = payload.as_array() {
+        return items
+            .iter()
+            .filter(|item| item.is_object())
+            .cloned()
+            .collect();
+    }
+    let data = payload.get("data").unwrap_or(payload);
+    if let Some(items) = data.as_array() {
+        return items
+            .iter()
+            .filter(|item| item.is_object())
+            .cloned()
+            .collect();
+    }
+    for key in ["items", "logs", "data"] {
+        if let Some(items) = data.get(key).and_then(Value::as_array) {
+            return items
+                .iter()
+                .filter(|item| item.is_object())
+                .cloned()
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn normalize_newapi_log_row(item: &Value) -> NewApiLogRow {
+    let other = parse_newapi_other(item.get("other"));
+    let request_id = optional_string(item.get("request_id"));
+    let provider_log_id = optional_string(item.get("id"));
+    let created_at = number_or_zero_i64(item.get("created_at"));
+    let input_tokens = first_number_i64(item, &["prompt_tokens", "input_tokens"]);
+    let output_tokens = first_number_i64(item, &["completion_tokens", "output_tokens"]);
+    let cached_input_tokens = number_or_zero_i64(other.get("cache_tokens"))
+        .max(number_or_zero_i64(item.get("cached_tokens")))
+        .max(number_or_zero_i64(item.get("cached_input_tokens")));
+    let total_tokens = number_or_zero_i64(item.get("total_tokens"));
+    let total_tokens = if total_tokens > 0 {
+        total_tokens
+    } else {
+        input_tokens + output_tokens
+    };
+    let raw_used_amount = first_number_i64(item, &["quota", "used_quota"]);
+    let unique_id = request_id
+        .as_ref()
+        .map(|value| format!("req:{}", value))
+        .unwrap_or_else(|| {
+            format!(
+                "id:{}",
+                provider_log_id.clone().unwrap_or_else(|| format!(
+                    "{}:{}:{}",
+                    created_at, input_tokens, output_tokens
+                ))
+            )
+        });
+
+    NewApiLogRow {
+        unique_id,
+        provider_log_id,
+        request_id,
+        created_at,
+        token_name: optional_string(item.get("token_name")),
+        model_name: optional_string(item.get("model_name")),
+        group_name: optional_string(item.get("group")),
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        total_tokens,
+        raw_used_amount,
+        other_json: item
+            .get("other")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string())
+            .or_else(|| serde_json::to_string(&other).ok()),
+    }
+}
+
+fn insert_newapi_logs(
+    connection: &mut Connection,
+    items: &[Value],
+) -> Result<Vec<NewApiLogRow>, String> {
+    let rows = items
+        .iter()
+        .map(normalize_newapi_log_row)
+        .collect::<Vec<_>>();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let mut inserted = Vec::new();
+    {
+        let mut statement = transaction
+            .prepare(
+                r#"
+                insert or ignore into newapi_logs (
+                  unique_id, provider_log_id, request_id, created_at, token_name, model_name,
+                  group_name, input_tokens, cached_input_tokens, output_tokens, total_tokens,
+                  raw_used_amount, other_json
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            let changes = statement
+                .execute(params![
+                    &row.unique_id,
+                    &row.provider_log_id,
+                    &row.request_id,
+                    row.created_at,
+                    &row.token_name,
+                    &row.model_name,
+                    &row.group_name,
+                    row.input_tokens,
+                    row.cached_input_tokens,
+                    row.output_tokens,
+                    row.total_tokens,
+                    row.raw_used_amount,
+                    &row.other_json
+                ])
+                .map_err(|error| error.to_string())?;
+            if changes > 0 {
+                inserted.push(row);
+            }
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(inserted)
+}
+
+fn summarize_newapi_log_rows(rows: &[NewApiLogRow]) -> Value {
+    let request_count = rows.len() as i64;
+    let input_tokens: i64 = rows.iter().map(|row| row.input_tokens).sum();
+    let cached_input_tokens: i64 = rows.iter().map(|row| row.cached_input_tokens).sum();
+    let output_tokens: i64 = rows.iter().map(|row| row.output_tokens).sum();
+    let total_tokens: i64 = rows.iter().map(|row| row.total_tokens).sum();
+    let raw_used_amount: i64 = rows.iter().map(|row| row.raw_used_amount).sum();
+    let latest_created_at = rows.iter().map(|row| row.created_at).max();
+    let cache_hit_rate = if input_tokens > 0 {
+        Some((cached_input_tokens as f64 / input_tokens as f64) * 100.0)
+    } else {
+        None
+    };
+    json!({
+        "requestCount": request_count,
+        "inputTokens": input_tokens,
+        "cachedInputTokens": cached_input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "rawUsedAmount": raw_used_amount,
+        "usedAmount": raw_used_amount as f64 / QUOTA_UNITS_PER_CNY,
+        "cacheHitRate": cache_hit_rate,
+        "latestCreatedAt": latest_created_at
+    })
+}
+
+fn save_newapi_sync_state(
+    connection: &Connection,
+    sync_key: &str,
+    base_url: &str,
+    api_user: &str,
+    secret: &str,
+    latest: Option<i64>,
+) -> Result<(), String> {
+    connection
+        .execute(
+            r#"
+            insert into newapi_sync_state (
+              sync_key, base_url, api_user, key_fingerprint, latest_created_at, last_synced_at,
+              fail_count, blocked_until, backfill_until
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, 0, null, null)
+            on conflict(sync_key) do update set
+              latest_created_at = excluded.latest_created_at,
+              last_synced_at = excluded.last_synced_at,
+              fail_count = 0,
+              blocked_until = null
+            "#,
+            params![
+                sync_key,
+                base_url,
+                api_user,
+                fnv1a_hex(secret),
+                latest,
+                unix_now_seconds() as i64
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn get_newapi_latest_created_at(
+    connection: &Connection,
+    sync_key: &str,
+) -> Result<Option<i64>, String> {
+    connection
+        .query_row(
+            "select latest_created_at from newapi_sync_state where sync_key = ?1",
+            params![sync_key],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(|error| error.to_string())
+}
+
+fn make_newapi_sync_key(base_url: &str, api_user: &str, secret: &str) -> String {
+    fnv1a_hex(&format!(
+        "{}:{}:{}",
+        trim_trailing_slash(base_url.to_string()),
+        api_user.trim(),
+        secret.trim()
+    ))
 }
 
 fn get_latest_codex_token_usage() -> Value {
@@ -1237,8 +1668,8 @@ fn mask_secret(secret: &str) -> String {
     format!("{}…{}", prefix, suffix)
 }
 
-fn trim_trailing_slash(value: String) -> String {
-    value.trim().trim_end_matches('/').to_string()
+fn trim_trailing_slash(value: impl AsRef<str>) -> String {
+    value.as_ref().trim().trim_end_matches('/').to_string()
 }
 
 fn local_api_text_response(status: u16, text: &str) -> Value {
@@ -1263,12 +1694,42 @@ fn number_or_zero(value: Option<&Value>) -> u64 {
     number_or_option(value).unwrap_or(0.0).max(0.0).trunc() as u64
 }
 
+fn number_or_zero_i64(value: Option<&Value>) -> i64 {
+    number_or_option(value).unwrap_or(0.0).max(0.0).trunc() as i64
+}
+
 fn number_or_option(value: Option<&Value>) -> Option<f64> {
     let value = value?;
     if let Some(number) = value.as_f64() {
         return Some(number);
     }
     value.as_str().and_then(|text| text.parse::<f64>().ok())
+}
+
+fn first_number_i64(value: &Value, keys: &[&str]) -> i64 {
+    keys.iter()
+        .find_map(|key| number_or_option(value.get(*key)))
+        .unwrap_or(0.0)
+        .max(0.0)
+        .trunc() as i64
+}
+
+fn optional_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn parse_newapi_other(value: Option<&Value>) -> Value {
+    match value {
+        Some(Value::Object(_)) => value.cloned().unwrap_or(Value::Null),
+        Some(Value::String(text)) if !text.trim().is_empty() => {
+            serde_json::from_str::<Value>(text).unwrap_or_else(|_| json!({}))
+        }
+        _ => json!({}),
+    }
 }
 
 fn fnv1a_hex(text: &str) -> String {
