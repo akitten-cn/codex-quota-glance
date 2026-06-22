@@ -63,7 +63,7 @@
 - [x] 实现 `/local-api/health`。
 - [x] 实现 `/local-api/update/latest`。
 - [x] 实现 Codex 最近活动解析，让红绿灯能从 `.codex/sessions/**/*.jsonl` 获取 thinking/executing/waiting/finished。
-- [ ] 迁移 Codex token latest/summary 的真实统计。
+- [x] 迁移 Codex token latest/summary 的真实统计。
 - [ ] 迁移 New API logs summary/sync/diagnose 的 SQLite 与 HTTP 同步逻辑。
 - [ ] 迁移 `/newapi-proxy`。
 
