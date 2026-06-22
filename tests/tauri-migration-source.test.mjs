@@ -59,6 +59,10 @@ assert.match(rustSource, /init_newapi_database/);
 assert.match(rustSource, /summarize_newapi_rows/);
 assert.match(rustSource, /get_latest_newapi_sync_snapshot/);
 assert.doesNotMatch(rustSource, /"mode": "tauri-migration",\s*"backfillComplete": false/s);
+assert.match(rustSource, /local_api_newapi_proxy/);
+assert.match(rustSource, /diagnose_newapi_user_self/);
+assert.match(rustSource, /newapi_auth_headers/);
+assert.match(rustSource, /mask_secret/);
 assert.match(rustSource, /TrayIconBuilder::with_id/);
 assert.match(rustSource, /build_tray_menu/);
 assert.match(rustSource, /toggle_capsule_window/);
@@ -72,6 +76,7 @@ assert.match(bridgeSource, /desktop_drag_start/);
 assert.match(bridgeSource, /desktop_update_download/);
 assert.match(bridgeSource, /installTauriLocalApiFetchBridge/);
 assert.match(bridgeSource, /\/local-api\//);
+assert.match(bridgeSource, /\/newapi-proxy/);
 
 const mainSource = readFileSync(new URL('src/main.tsx', root), 'utf8');
 assert.match(mainSource, /import '\.\/lib\/desktopBridge';/);

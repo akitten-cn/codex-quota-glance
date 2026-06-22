@@ -40,6 +40,9 @@ async fn local_api_request(request: LocalApiRequest) -> Result<Value, String> {
         .unwrap_or("GET")
         .to_ascii_uppercase();
     let path = local_api_path(&request.url)?;
+    if path == "/newapi-proxy" {
+        return local_api_newapi_proxy(&request, &method).await;
+    }
     let _headers = request.headers.as_ref();
     let body = match (method.as_str(), path.as_str()) {
         ("GET", "/local-api/health") => json!({
@@ -59,21 +62,9 @@ async fn local_api_request(request: LocalApiRequest) -> Result<Value, String> {
             "message": "Tauri 本地日志同步正在迁移中",
             "summary": local_api_newapi_summary()
         }),
-        ("POST", "/local-api/newapi/diagnose") => json!({
-            "ok": true,
-            "request": {
-                "diagnostics": {
-                    "mode": "tauri-migration"
-                },
-                "rawHttpRequest": request.body.unwrap_or_default()
-            },
-            "response": {
-                "success": false,
-                "httpStatus": 0,
-                "message": "Tauri New API 诊断正在迁移中",
-                "dataKeys": []
-            }
-        }),
+        ("POST", "/local-api/newapi/diagnose") => {
+            diagnose_newapi_user_self(request.body.as_deref().unwrap_or("{}")).await
+        }
         _ => {
             return Ok(json!({
                 "status": 404,
@@ -458,6 +449,155 @@ async fn local_api_update_latest() -> Value {
             "message": format!("GitHub Releases 检查失败：{}", error)
         }),
     }
+}
+
+async fn local_api_newapi_proxy(request: &LocalApiRequest, method: &str) -> Result<Value, String> {
+    let target = header_value(request.headers.as_ref(), "x-newapi-target");
+    if target.trim().is_empty() {
+        return Ok(local_api_text_response(400, "Missing X-NewAPI-Target"));
+    }
+    let target_url =
+        reqwest::Url::parse(&target).map_err(|_| "Unsupported target URL".to_string())?;
+    if !matches!(target_url.scheme(), "http" | "https") {
+        return Ok(local_api_text_response(400, "Unsupported target protocol"));
+    }
+    let method = method
+        .parse::<reqwest::Method>()
+        .unwrap_or(reqwest::Method::GET);
+    let mut builder = reqwest::Client::new()
+        .request(method.clone(), target_url)
+        .header("User-Agent", "CodexQuotaGlance/0.1");
+
+    for (name, value) in newapi_proxy_headers(request.headers.as_ref()) {
+        builder = builder.header(name, value);
+    }
+    if method != reqwest::Method::GET {
+        if let Some(body) = request.body.as_deref() {
+            builder = builder.body(body.to_string());
+        }
+    }
+
+    let response = builder
+        .send()
+        .await
+        .map_err(|error| format!("New API 代理请求失败：{}", error))?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json; charset=utf-8")
+        .to_string();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("读取 New API 响应失败：{}", error))?;
+    let body = if content_type.to_ascii_lowercase().contains("json") {
+        serde_json::from_str::<Value>(&text).unwrap_or_else(|_| Value::String(text))
+    } else {
+        Value::String(text)
+    };
+
+    Ok(json!({
+        "status": status,
+        "ok": status < 400,
+        "headers": {
+            "content-type": content_type,
+            "cache-control": "no-store"
+        },
+        "body": body
+    }))
+}
+
+async fn diagnose_newapi_user_self(body: &str) -> Value {
+    let payload = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+    let base_url = trim_trailing_slash(string_field(&payload, "baseUrl"));
+    let access_token = string_field(&payload, "accessToken");
+    let api_user = string_field(&payload, "newApiUser");
+    if base_url.is_empty() || access_token.is_empty() {
+        return json!({
+            "ok": false,
+            "message": "baseUrl and accessToken are required"
+        });
+    }
+    let url = match reqwest::Url::parse(&format!("{}/api/user/self", base_url)) {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "message": format!("New API 地址无效：{}", error)
+            });
+        }
+    };
+    let raw_request = [
+        "GET /api/user/self HTTP/1.1".to_string(),
+        format!("Host: {}", url.host_str().unwrap_or_default()),
+        format!(
+            "Authorization: Bearer {}",
+            mask_secret(&clean_bearer_token(&access_token))
+        ),
+        format!("New-Api-User: {}", api_user),
+        "User-Agent: Apifox/1.0.0 (https://apifox.com)".to_string(),
+        "Accept: */*".to_string(),
+        "Connection: keep-alive".to_string(),
+    ]
+    .join("\r\n");
+
+    let mut http_status = 0_u16;
+    let mut parsed_body = Value::Null;
+    let message: String;
+    let mut builder = reqwest::Client::new().get(url.as_str());
+    for (name, value) in newapi_auth_headers(&access_token, &api_user, true) {
+        builder = builder.header(name, value);
+    }
+    match builder.send().await {
+        Ok(response) => {
+            http_status = response.status().as_u16();
+            match response.text().await {
+                Ok(text) => {
+                    message = text.chars().take(200).collect();
+                    parsed_body = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
+                }
+                Err(error) => {
+                    message = error.to_string();
+                }
+            }
+        }
+        Err(error) => {
+            message = error.to_string();
+        }
+    }
+    let data_keys = parsed_body
+        .get("data")
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .keys()
+                .take(40)
+                .map(|key| Value::String(key.to_string()))
+                .collect::<Vec<Value>>()
+        })
+        .unwrap_or_default();
+
+    json!({
+        "ok": true,
+        "request": {
+            "url": url.to_string(),
+            "sentHeaders": masked_newapi_headers(&access_token, &api_user, true),
+            "rawHttpRequest": raw_request,
+            "diagnostics": newapi_header_diagnostics(&access_token)
+        },
+        "response": {
+            "httpStatus": http_status,
+            "success": parsed_body.get("success").cloned().unwrap_or(Value::Null),
+            "message": parsed_body
+                .get("message")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string())
+                .unwrap_or(message),
+            "dataKeys": data_keys
+        }
+    })
 }
 
 fn get_latest_codex_token_usage() -> Value {
@@ -973,6 +1113,143 @@ fn string_field(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+fn header_value(headers: Option<&HashMap<String, String>>, name: &str) -> String {
+    headers
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn newapi_proxy_headers(headers: Option<&HashMap<String, String>>) -> Vec<(&'static str, String)> {
+    let mut result = Vec::new();
+    let authorization = header_value(headers, "authorization");
+    if !authorization.trim().is_empty() {
+        result.push(("Authorization", authorization));
+    }
+    let api_user = header_value(headers, "new-api-user");
+    if !api_user.trim().is_empty() {
+        result.push(("New-Api-User", api_user));
+    }
+    let accept = header_value(headers, "accept");
+    result.push((
+        "Accept",
+        if accept.trim().is_empty() {
+            "application/json".to_string()
+        } else {
+            accept
+        },
+    ));
+    result
+}
+
+fn newapi_auth_headers(
+    token: &str,
+    api_user: &str,
+    apifox_like: bool,
+) -> Vec<(&'static str, String)> {
+    let mut result = vec![
+        (
+            "Authorization",
+            format!("Bearer {}", clean_bearer_token(token)),
+        ),
+        ("New-Api-User", api_user.trim().to_string()),
+    ];
+    if apifox_like {
+        result.push((
+            "User-Agent",
+            "Apifox/1.0.0 (https://apifox.com)".to_string(),
+        ));
+        result.push(("Accept", "*/*".to_string()));
+        result.push(("Connection", "keep-alive".to_string()));
+    } else {
+        result.push(("Accept", "application/json".to_string()));
+    }
+    result
+        .into_iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .collect()
+}
+
+fn masked_newapi_headers(token: &str, api_user: &str, apifox_like: bool) -> Value {
+    let mut headers = serde_json::Map::new();
+    headers.insert(
+        "Authorization".to_string(),
+        Value::String(format!(
+            "Bearer {}",
+            mask_secret(&clean_bearer_token(token))
+        )),
+    );
+    headers.insert(
+        "New-Api-User".to_string(),
+        Value::String(api_user.trim().to_string()),
+    );
+    if apifox_like {
+        headers.insert(
+            "User-Agent".to_string(),
+            Value::String("Apifox/1.0.0 (https://apifox.com)".to_string()),
+        );
+        headers.insert("Accept".to_string(), Value::String("*/*".to_string()));
+    }
+    Value::Object(headers)
+}
+
+fn newapi_header_diagnostics(token: &str) -> Value {
+    let clean = clean_bearer_token(token);
+    json!({
+        "tokenTrimmedLength": clean.len(),
+        "tokenHashPrefix": fnv1a_hex(&clean).chars().take(12).collect::<String>(),
+        "authorizationPrefix": if clean.is_empty() { "" } else { "Bearer " }
+    })
+}
+
+fn clean_bearer_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.to_ascii_lowercase().starts_with("bearer ") {
+        trimmed
+            .char_indices()
+            .nth(7)
+            .map(|(index, _)| trimmed[index..].trim().to_string())
+            .unwrap_or_default()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn mask_secret(secret: &str) -> String {
+    let chars = secret.chars().collect::<Vec<char>>();
+    if chars.is_empty() {
+        return String::new();
+    }
+    if chars.len() <= 8 {
+        return "****".to_string();
+    }
+    let prefix = chars.iter().take(4).collect::<String>();
+    let suffix = chars
+        .iter()
+        .skip(chars.len().saturating_sub(4))
+        .collect::<String>();
+    format!("{}…{}", prefix, suffix)
+}
+
+fn trim_trailing_slash(value: String) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+fn local_api_text_response(status: u16, text: &str) -> Value {
+    json!({
+        "status": status,
+        "ok": status < 400,
+        "headers": {
+            "content-type": "text/plain; charset=utf-8"
+        },
+        "body": text
+    })
 }
 
 fn string_or_null(value: Option<&Value>) -> Value {
