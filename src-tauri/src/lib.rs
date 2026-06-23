@@ -108,14 +108,8 @@ fn desktop_drag_end() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn desktop_hit_test_regions(window: Window, payload: Value) -> Result<(), String> {
-    let interactive = payload
-        .get("interactive")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    window
-        .set_ignore_cursor_events(!interactive)
-        .map_err(|error| error.to_string())
+fn desktop_hit_test_regions(_window: Window, _payload: Value) -> Result<(), String> {
+    Ok(())
 }
 
 #[tauri::command]

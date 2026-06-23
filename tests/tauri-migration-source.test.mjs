@@ -45,7 +45,7 @@ assert.match(rustSource, /PhysicalSize/);
 assert.match(rustSource, /PhysicalPosition/);
 assert.match(rustSource, /set_size/);
 assert.match(rustSource, /set_position/);
-assert.match(rustSource, /set_ignore_cursor_events/);
+assert.doesNotMatch(rustSource, /set_ignore_cursor_events\s*\(\s*!\s*interactive\s*\)/);
 assert.match(rustSource, /trusted_update_asset/);
 assert.match(rustSource, /reqwest::Client::new\(\)/);
 assert.match(rustSource, /std::process::Command::new/);
