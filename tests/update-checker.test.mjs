@@ -9,7 +9,7 @@ import {
   selectWindowsInstallerAsset
 } from '../src/lib/updateChecker.mjs';
 
-assert.equal(APP_VERSION, '0.1.11');
+assert.equal(APP_VERSION, '0.1.12');
 assert.equal(LOCAL_LATEST_RELEASE_API_URL, '/local-api/update/latest');
 assert.equal(normalizeVersionTag('v0.2.0'), '0.2.0');
 assert.equal(normalizeVersionTag(' V1.2.3 '), '1.2.3');

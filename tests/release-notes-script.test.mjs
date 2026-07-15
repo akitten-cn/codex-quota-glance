@@ -27,7 +27,7 @@ rmSync(output);
 
 execFileSync(process.execPath, [
   script,
-  'v0.1.11',
+  'v0.1.12',
   output
 ], {
   cwd,
@@ -35,9 +35,9 @@ execFileSync(process.execPath, [
 });
 
 const chineseBody = readFileSync(output, 'utf8');
-assert.match(chineseBody, /修正官方登录模式的今日 Token 统计/);
-assert.match(chineseBody, /官方 5 小时额度恢复提醒/);
-assert.doesNotMatch(chineseBody, /## 0\.1\.10/);
+assert.match(chineseBody, /修正活动红绿灯误判/);
+assert.match(chineseBody, /5h 恢复后自动切回 5h \+ 7d/);
+assert.doesNotMatch(chineseBody, /## 0\.1\.11/);
 rmSync(output);
 
 console.log('release notes script tests passed');
