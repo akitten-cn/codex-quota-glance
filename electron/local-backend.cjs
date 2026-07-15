@@ -198,9 +198,20 @@ async function handleRequest(request, response) {
 }
 
 async function getCodexOverview() {
-  const status = await getCodexStatus().catch((error) => ({ ok: false, message: errorMessage(error) }));
+  let status = await getCodexStatus().catch((error) => ({ ok: false, message: errorMessage(error) }));
   let runtime = readCodexRuntimeState();
+  let latestToken;
+  try {
+    latestToken = getLatestCodexTokenUsage();
+  } catch (error) {
+    latestToken = { ok: false, available: false, message: errorMessage(error) };
+  }
+
   if (status?.accountType) {
+    status = {
+      ...status,
+      quota: reconcileCodexRateLimits(status.quota, latestToken?.quota)
+    };
     runtime = applyCodexRuntimeObservation(runtime, {
       accountType: status.accountType,
       now: unixNow(),
@@ -210,13 +221,6 @@ async function getCodexOverview() {
         !hasNormalizedRateLimitWindow(status.quota?.window5h)
     });
     writeCodexRuntimeState(runtime);
-  }
-
-  let latestToken;
-  try {
-    latestToken = getLatestCodexTokenUsage();
-  } catch (error) {
-    latestToken = { ok: false, available: false, message: errorMessage(error) };
   }
 
   const tokenSummary = await Promise.resolve()
@@ -1659,6 +1663,46 @@ function assignCodexRateLimitWindows(primary, secondary) {
   return { window5h: window5h || {}, weekly: weekly || {} };
 }
 
+function reconcileCodexRateLimits(quota, referenceQuota) {
+  if (!quota || typeof quota !== 'object') return quota || {};
+  const window5h = quota.window5h || {};
+  const weekly = quota.weekly || {};
+  const referenceWeekly = referenceQuota?.weekly || {};
+  const hasAmbiguousPrimary =
+    hasNormalizedRateLimitWindow(window5h) &&
+    !hasNormalizedRateLimitWindow(weekly) &&
+    numberOrUndefined(window5h.windowMinutes) === undefined;
+
+  if (
+    !hasAmbiguousPrimary ||
+    !hasNormalizedRateLimitWindow(referenceWeekly) ||
+    !codexRateLimitWindowsMatch(window5h, referenceWeekly)
+  ) {
+    return quota;
+  }
+
+  return {
+    ...quota,
+    window5h: {},
+    weekly: {
+      ...referenceWeekly,
+      ...window5h,
+      windowMinutes: referenceWeekly.windowMinutes
+    }
+  };
+}
+
+function codexRateLimitWindowsMatch(first, second) {
+  const firstReset = Date.parse(String(first?.resetAt || ''));
+  const secondReset = Date.parse(String(second?.resetAt || ''));
+  if (!Number.isFinite(firstReset) || !Number.isFinite(secondReset) || Math.abs(firstReset - secondReset) > 5000) {
+    return false;
+  }
+  const firstUsed = numberOrUndefined(first?.usedPercent);
+  const secondUsed = numberOrUndefined(second?.usedPercent);
+  return firstUsed === undefined || secondUsed === undefined || Math.abs(firstUsed - secondUsed) < 0.01;
+}
+
 function codexRateLimitRole(window) {
   const minutes = numberOrUndefined(window?.windowMinutes);
   if (minutes === undefined || minutes <= 0) return undefined;
@@ -2228,6 +2272,7 @@ module.exports = {
     summarizeLogRows,
     normalizeCodexRateLimits,
     normalizeCodexRateLimitsCamel,
+    reconcileCodexRateLimits,
     parseCodexConfig,
     parseCodexTokenEvents,
     settleCodexActivity,

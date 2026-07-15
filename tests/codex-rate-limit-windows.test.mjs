@@ -53,4 +53,33 @@ const removedAgain = _internals.normalizeCodexRateLimits({
 assert.equal(removedAgain.window5h.remainingPercent, undefined);
 assert.equal(removedAgain.weekly.remainingPercent, 85);
 
+const rpcWithoutWindowMinutes = _internals.normalizeCodexRateLimitsCamel({
+  primary: {
+    usedPercent: 19,
+    windowMinutes: null,
+    resetsAt: 1784682595
+  },
+  secondary: null,
+  planType: 'plus'
+});
+const sessionWithWeeklyWindow = _internals.normalizeCodexRateLimits({
+  primary: {
+    used_percent: 19,
+    window_minutes: 10080,
+    resets_at: 1784682594
+  },
+  secondary: null,
+  plan_type: 'plus'
+});
+assert.equal(typeof _internals.reconcileCodexRateLimits, 'function');
+const reconciledWeeklyWindow = _internals.reconcileCodexRateLimits(
+  rpcWithoutWindowMinutes,
+  sessionWithWeeklyWindow
+);
+
+assert.equal(reconciledWeeklyWindow.window5h.remainingPercent, undefined);
+assert.equal(reconciledWeeklyWindow.weekly.remainingPercent, 81);
+assert.equal(reconciledWeeklyWindow.weekly.windowMinutes, 10080);
+assert.equal(reconciledWeeklyWindow.weekly.resetAt, '2026-07-22T01:09:55.000Z');
+
 console.log('codex rate limit window tests passed');

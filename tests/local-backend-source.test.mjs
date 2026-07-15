@@ -28,6 +28,7 @@ assert.match(backendSource, /\/local-api\/newapi\/logs\/summary/);
 assert.match(backendSource, /\/local-api\/newapi\/logs\/sync/);
 assert.match(backendSource, /\/local-api\/codex\/token\/latest/);
 assert.match(backendSource, /\/local-api\/codex\/overview/);
+assert.match(backendSource, /reconcileCodexRateLimits\(status\.quota, latestToken\?\.quota\)/);
 assert.match(backendSource, /\/local-api\/codex\/quota-reminder\/confirm/);
 assert.match(backendSource, /isQuotaReminderPending/);
 assert.match(backendSource, /confirmQuotaReminder/);
