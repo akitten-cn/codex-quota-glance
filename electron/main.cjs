@@ -105,8 +105,8 @@ async function createCapsuleWindow() {
     }
   });
 
-  capsuleWindow.setAlwaysOnTop(true, 'floating');
-  capsuleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
+  capsuleWindow.setAlwaysOnTop(true, 'screen-saver');
+  capsuleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   capsuleWindow.once('ready-to-show', () => {
     if (capsuleUserHidden) return;
     capsuleWindow.showInactive();
@@ -158,8 +158,8 @@ async function ensureDetailWindow() {
     }
   });
 
-  detailWindow.setAlwaysOnTop(true, 'floating');
-  detailWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
+  detailWindow.setAlwaysOnTop(true, 'screen-saver');
+  detailWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   detailWindow.setIgnoreMouseEvents(true);
   detailWindow.webContents.on('did-finish-load', () => {
     detailContentReady = true;
@@ -716,7 +716,7 @@ function sendPositionChanged(position) {
 
 function keepFloatingWindowOnTop(win = capsuleWindow) {
   if (!win || win.isDestroyed()) return;
-  win.setAlwaysOnTop(true, 'floating');
+  win.setAlwaysOnTop(true, 'screen-saver');
   win.moveTop();
 }
 

@@ -34,9 +34,9 @@ export default function DetailPanel({ snapshot }: Props) {
 function CodexDetails({ snapshot }: { snapshot: ProviderSnapshot }) {
   const tokenUsage = snapshot.localLogs?.today ?? snapshot.usage;
   const tokenUpdatedAt = snapshot.localLogs?.today?.latestLogAt ?? snapshot.usage?.log?.updatedAt;
-  const hasCodexQuotaData =
-    Number.isFinite(Number(snapshot.quota?.window5h?.remainingPercent)) ||
-    Number.isFinite(Number(snapshot.quota?.weekly?.remainingPercent));
+  const hasWindow5hQuota = Number.isFinite(Number(snapshot.quota?.window5h?.remainingPercent));
+  const hasWeeklyQuota = Number.isFinite(Number(snapshot.quota?.weekly?.remainingPercent));
+  const hasCodexQuotaData = hasWindow5hQuota || hasWeeklyQuota;
   const hasCodexTokenData =
     Number.isFinite(Number(tokenUsage?.inputTokens)) ||
     Number.isFinite(Number(tokenUsage?.cachedInputTokens)) ||
@@ -48,14 +48,22 @@ function CodexDetails({ snapshot }: { snapshot: ProviderSnapshot }) {
       <dd>{statusText(snapshot.status)}</dd>
       {hasCodexQuotaData ? (
         <>
-          <dt>5h 剩余</dt>
-          <dd>{formatPercent(snapshot.quota?.window5h?.remainingPercent)}</dd>
-          <dt>5h 刷新</dt>
-          <dd>{formatDateTime(snapshot.quota?.window5h?.resetAt)}</dd>
-          <dt>Weekly 剩余</dt>
-          <dd>{formatPercent(snapshot.quota?.weekly?.remainingPercent)}</dd>
-          <dt>Weekly 刷新</dt>
-          <dd>{formatDateTime(snapshot.quota?.weekly?.resetAt)}</dd>
+          {hasWindow5hQuota && (
+            <>
+              <dt>5h 剩余</dt>
+              <dd>{formatPercent(snapshot.quota?.window5h?.remainingPercent)}</dd>
+              <dt>5h 刷新</dt>
+              <dd>{formatDateTime(snapshot.quota?.window5h?.resetAt)}</dd>
+            </>
+          )}
+          {hasWeeklyQuota && (
+            <>
+              <dt>Weekly 剩余</dt>
+              <dd>{formatPercent(snapshot.quota?.weekly?.remainingPercent)}</dd>
+              <dt>Weekly 刷新</dt>
+              <dd>{formatDateTime(snapshot.quota?.weekly?.resetAt)}</dd>
+            </>
+          )}
         </>
       ) : (
         <>

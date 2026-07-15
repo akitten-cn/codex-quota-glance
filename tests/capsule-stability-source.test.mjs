@@ -13,6 +13,7 @@ assert.match(electronMain, /screen\.on\('display-metrics-changed',\s*restoreCaps
 assert.match(electronMain, /screen\.getCursorScreenPoint\(\)/);
 assert.match(electronMain, /capsuleWindow\.showInactive\(\)/);
 assert.match(electronMain, /keepFloatingWindowOnTop\(capsuleWindow\)/);
+assert.match(electronMain, /setVisibleOnAllWorkspaces\(true,\s*\{\s*visibleOnFullScreen:\s*true\s*\}\)/);
 
 assert.match(electronMain, /desktop-hit-test-regions/);
 assert.match(electronMain, /setIgnoreMouseEvents\(true,\s*\{\s*forward:\s*true\s*\}\)/);

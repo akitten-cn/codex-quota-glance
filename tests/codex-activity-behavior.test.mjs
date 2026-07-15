@@ -27,6 +27,43 @@ const staleExecuting = _internals.settleCodexActivity(
 
 assert.equal(staleExecuting.status, 'finished');
 
+const activeEditingUpdate = _internals.codexActivityUpdate(
+  {
+    timestamp: '2026-07-01T11:57:00.000Z',
+    type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'apply_patch', status: 'completed' }
+  },
+  { isInsideTurn: true, waitingForPlanChoice: false, lastFinalAnswerAt: null }
+);
+assert.equal(activeEditingUpdate.status, 'executing');
+assert.equal(activeEditingUpdate.isInsideTurn, true);
+
+const activeEditing = _internals.settleCodexActivity(
+  {
+    status: activeEditingUpdate.status,
+    label: 'executing',
+    timestamp: '2026-07-01T11:57:00.000Z',
+    needsHumanAttention: false,
+    activeTurn: activeEditingUpdate.isInsideTurn
+  },
+  { mtimeMs: nowMs - 180_000 },
+  nowMs
+);
+assert.equal(activeEditing.status, 'executing');
+
+const activeLongThinking = _internals.settleCodexActivity(
+  {
+    status: 'thinking',
+    label: 'thinking',
+    timestamp: '2026-07-01T11:00:00.000Z',
+    needsHumanAttention: false,
+    activeTurn: true
+  },
+  { mtimeMs: nowMs - 3_600_000 },
+  nowMs
+);
+assert.equal(activeLongThinking.status, 'thinking');
+
 const waitingForUser = _internals.settleCodexActivity(
   { status: 'waiting_for_user', label: 'waiting', timestamp: '2026-07-01T11:57:00.000Z', needsHumanAttention: true },
   { mtimeMs: nowMs - 180_000 },

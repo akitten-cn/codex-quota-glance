@@ -118,6 +118,22 @@ assert.match(officialCapsule.meta, /42%/);
 assert.match(officialCapsule.subtitle, /刷新/);
 assert.doesNotMatch(officialCapsule.subtitle, /06\/06/);
 
+const weeklyOnlyCapsule = getCapsuleDisplay({
+  ...codexOfficial,
+  quota: {
+    window5h: {},
+    weekly: { remainingPercent: 89, resetAt: '2026-07-20T06:23:14+00:00' }
+  }
+});
+assert.match(weeklyOnlyCapsule.subtitle, /7d 剩余 89%/);
+assert.match(weeklyOnlyCapsule.subtitle, /刷新/);
+assert.doesNotMatch(weeklyOnlyCapsule.subtitle, /5h/);
+assert.equal(weeklyOnlyCapsule.meta, '');
+
+const restoredQuotaCapsule = getCapsuleDisplay(codexOfficial);
+assert.match(restoredQuotaCapsule.subtitle, /5h/);
+assert.match(restoredQuotaCapsule.meta, /7d/);
+
 const officialPendingCapsule = getCapsuleDisplay({
   ...codexOfficial,
   quota: { window5h: {}, weekly: {} }

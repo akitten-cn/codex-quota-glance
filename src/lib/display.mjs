@@ -42,21 +42,25 @@ export function getCapsuleDisplay(snapshot) {
 
   const window5h = snapshot.quota?.window5h?.remainingPercent;
   const weekly = snapshot.quota?.weekly?.remainingPercent;
-  const hasQuotaData = Number.isFinite(window5h) || Number.isFinite(weekly);
+  const hasWindow5h = Number.isFinite(window5h);
+  const hasWeekly = Number.isFinite(weekly);
   const tokenUsage = preferUsage(snapshot);
   const tokenLine = `输入 ${formatTokenCount(tokenUsage.inputTokens)} · 缓存 ${formatTokenCount(tokenUsage.cachedInputTokens)} · 输出 ${formatTokenCount(tokenUsage.outputTokens)} · 命中 ${formatPercent(tokenUsage.cacheHitRate)}`;
   const hasTokenUsage =
     Number.isFinite(Number(tokenUsage.inputTokens)) ||
     Number.isFinite(Number(tokenUsage.cachedInputTokens)) ||
     Number.isFinite(Number(tokenUsage.outputTokens));
-  return {
-    title: snapshot.providerName ?? 'Codex',
-    subtitle: hasQuotaData
-      ? `5h 剩余 ${formatPercent(window5h)} · 刷新 ${formatTimeOnly(snapshot.quota?.window5h?.resetAt)}`
+  const subtitle = hasWindow5h
+    ? `5h 剩余 ${formatPercent(window5h)} · 刷新 ${formatTimeOnly(snapshot.quota?.window5h?.resetAt)}`
+    : hasWeekly
+      ? `7d 剩余 ${formatPercent(weekly)} · 刷新 ${formatMonthDayTime(snapshot.quota?.weekly?.resetAt)}`
       : hasTokenUsage
         ? tokenLine
-        : '官方余量源未发现',
-    meta: hasQuotaData
+        : '官方余量源未发现';
+  return {
+    title: snapshot.providerName ?? 'Codex',
+    subtitle,
+    meta: hasWindow5h && hasWeekly
       ? `7d 剩余 ${formatPercent(weekly)} · 刷新 ${formatMonthDayTime(snapshot.quota?.weekly?.resetAt)}`
       : ''
   };
