@@ -204,7 +204,10 @@ async function getCodexOverview() {
     runtime = applyCodexRuntimeObservation(runtime, {
       accountType: status.accountType,
       now: unixNow(),
-      quota: status.quota?.window5h
+      quota: status.quota?.window5h,
+      fiveHourQuotaUnavailable:
+        hasNormalizedRateLimitWindow(status.quota?.weekly) &&
+        !hasNormalizedRateLimitWindow(status.quota?.window5h)
     });
     writeCodexRuntimeState(runtime);
   }
@@ -1303,7 +1306,8 @@ function parseCodexActivity(sessionFile) {
       label: codexActivityLabel(update.status, Boolean(update.needsHumanAttention)),
       timestamp: event.timestamp,
       needsHumanAttention: Boolean(update.needsHumanAttention),
-      completedTask: Boolean(update.completedTask)
+      completedTask: Boolean(update.completedTask),
+      activeTurn: isInsideTurn
     };
   }
   return activity || { status: 'unknown', label: '状态未知', needsHumanAttention: false, completedTask: false };
@@ -1311,6 +1315,7 @@ function parseCodexActivity(sessionFile) {
 
 function settleCodexActivity(activity, stat, nowMs = Date.now()) {
   if (!activity || activity.needsHumanAttention) return activity;
+  if (activity.activeTurn) return activity;
   if (!['thinking', 'executing', 'answering'].includes(activity.status)) return activity;
   const eventMs = (parseIsoTimestamp(String(activity.timestamp || '')) || 0) * 1000;
   const fileMs = Number(stat?.mtimeMs || 0);
@@ -1612,9 +1617,12 @@ function getCodexAccountType() {
 
 function normalizeCodexRateLimits(rateLimits) {
   if (!rateLimits || typeof rateLimits !== 'object') return {};
+  const windows = assignCodexRateLimitWindows(
+    normalizeCodexRateLimitWindow(rateLimits.primary),
+    normalizeCodexRateLimitWindow(rateLimits.secondary)
+  );
   return {
-    window5h: normalizeCodexRateLimitWindow(rateLimits.primary),
-    weekly: normalizeCodexRateLimitWindow(rateLimits.secondary),
+    ...windows,
     planType: stringOrUndefined(rateLimits.plan_type),
     rateLimitReachedType: stringOrUndefined(rateLimits.rate_limit_reached_type)
   };
@@ -1622,12 +1630,43 @@ function normalizeCodexRateLimits(rateLimits) {
 
 function normalizeCodexRateLimitsCamel(rateLimits) {
   if (!rateLimits || typeof rateLimits !== 'object') return {};
+  const windows = assignCodexRateLimitWindows(
+    normalizeCodexRateLimitWindowCamel(rateLimits.primary),
+    normalizeCodexRateLimitWindowCamel(rateLimits.secondary)
+  );
   return {
-    window5h: normalizeCodexRateLimitWindowCamel(rateLimits.primary),
-    weekly: normalizeCodexRateLimitWindowCamel(rateLimits.secondary),
+    ...windows,
     planType: stringOrUndefined(rateLimits.planType),
     rateLimitReachedType: stringOrUndefined(rateLimits.rateLimitReachedType)
   };
+}
+
+function assignCodexRateLimitWindows(primary, secondary) {
+  const entries = [
+    { position: 'primary', value: primary, role: codexRateLimitRole(primary) },
+    { position: 'secondary', value: secondary, role: codexRateLimitRole(secondary) }
+  ].filter((entry) => hasNormalizedRateLimitWindow(entry.value));
+  let window5h = entries.find((entry) => entry.role === 'window5h')?.value;
+  let weekly = entries.find((entry) => entry.role === 'weekly')?.value;
+
+  for (const entry of entries.filter((candidate) => !candidate.role)) {
+    if (entry.position === 'primary' && !window5h) window5h = entry.value;
+    else if (entry.position === 'secondary' && !weekly) weekly = entry.value;
+    else if (!window5h) window5h = entry.value;
+    else if (!weekly) weekly = entry.value;
+  }
+
+  return { window5h: window5h || {}, weekly: weekly || {} };
+}
+
+function codexRateLimitRole(window) {
+  const minutes = numberOrUndefined(window?.windowMinutes);
+  if (minutes === undefined || minutes <= 0) return undefined;
+  return minutes >= 24 * 60 ? 'weekly' : 'window5h';
+}
+
+function hasNormalizedRateLimitWindow(window) {
+  return Boolean(window && typeof window === 'object' && Object.values(window).some((value) => value !== undefined));
 }
 
 function normalizeCodexRateLimitWindow(window) {
@@ -2188,6 +2227,7 @@ module.exports = {
     normalizeLogItems,
     summarizeLogRows,
     normalizeCodexRateLimits,
+    normalizeCodexRateLimitsCamel,
     parseCodexConfig,
     parseCodexTokenEvents,
     settleCodexActivity,

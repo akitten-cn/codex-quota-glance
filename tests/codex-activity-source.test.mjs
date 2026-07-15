@@ -16,6 +16,8 @@ assert.doesNotMatch(backend, /isExecutionCommentary\(payload\)[\s\S]{0,120}activ
 assert.doesNotMatch(backend, /function isExecutionCommentary/);
 assert.match(backend, /codexActivityLabel\(status/);
 assert.match(backend, /CODEX_ACTIVITY_STALE_MS = 15 \* 1000/);
+assert.match(backend, /activeTurn:\s*isInsideTurn/);
+assert.match(backend, /if \(activity\.activeTurn\) return activity/);
 assert.doesNotMatch(backend, /shouldKeepFinalAnswerVisible/);
 assert.match(backend, /status === 'thinking'[\s\S]*思考/);
 assert.match(backend, /status === 'executing'[\s\S]*执行/);

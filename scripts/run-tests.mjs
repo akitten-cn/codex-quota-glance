@@ -8,6 +8,7 @@ const nodeTests = [
   'tests/quota-amount.test.mjs',
   'tests/spend-events.test.mjs',
   'tests/codex-token-ingestion.test.mjs',
+  'tests/codex-rate-limit-windows.test.mjs',
   'tests/codex-runtime-state.test.mjs',
   'tests/codex-activity-behavior.test.mjs',
   'tests/codex-overview-store.test.mjs',

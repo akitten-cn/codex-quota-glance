@@ -57,4 +57,13 @@ const nextCycle = applyCodexRuntimeObservation(confirmed, {
 assert.equal(nextCycle.waitingResetAt, 2400);
 assert.equal(nextCycle.confirmedResetAt, undefined);
 
+const fiveHourRemoved = applyCodexRuntimeObservation(nextCycle, {
+  accountType: 'official_login',
+  now: 2100,
+  fiveHourQuotaUnavailable: true
+});
+assert.equal(fiveHourRemoved.waitingResetAt, undefined);
+assert.equal(fiveHourRemoved.confirmedResetAt, undefined);
+assert.equal(fiveHourRemoved.lastOfficialRemainingPercent, undefined);
+
 console.log('codex runtime state tests passed');

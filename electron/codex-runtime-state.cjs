@@ -8,6 +8,13 @@ function applyCodexRuntimeObservation(current = {}, observation = {}) {
   }
   if (accountType) next.lastAccountType = accountType;
 
+  if (accountType === 'official_login' && observation.fiveHourQuotaUnavailable) {
+    next.lastOfficialRemainingPercent = undefined;
+    next.waitingResetAt = undefined;
+    next.confirmedResetAt = undefined;
+    return next;
+  }
+
   const remaining = Number(observation.quota?.remainingPercent);
   const resetAt = toUnixSeconds(observation.quota?.resetAt);
   if (accountType === 'official_login' && Number.isFinite(remaining) && remaining <= 0 && resetAt !== undefined) {
