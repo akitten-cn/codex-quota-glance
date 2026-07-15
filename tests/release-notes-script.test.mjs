@@ -27,7 +27,7 @@ rmSync(output);
 
 execFileSync(process.execPath, [
   script,
-  'v0.1.12',
+  'v0.1.13',
   output
 ], {
   cwd,
@@ -35,9 +35,9 @@ execFileSync(process.execPath, [
 });
 
 const chineseBody = readFileSync(output, 'utf8');
-assert.match(chineseBody, /修正活动红绿灯误判/);
-assert.match(chineseBody, /5h 恢复后自动切回 5h \+ 7d/);
-assert.doesNotMatch(chineseBody, /## 0\.1\.11/);
+assert.match(chineseBody, /胶囊仍重复显示一条相同 5h 额度/);
+assert.match(chineseBody, /正确归类为 7d/);
+assert.doesNotMatch(chineseBody, /## 0\.1\.12/);
 rmSync(output);
 
 console.log('release notes script tests passed');
