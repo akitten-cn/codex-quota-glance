@@ -37,4 +37,20 @@ const weeklyOnlyCamel = _internals.normalizeCodexRateLimitsCamel({
 assert.equal(weeklyOnlyCamel.window5h.remainingPercent, undefined);
 assert.equal(weeklyOnlyCamel.weekly.remainingPercent, 87);
 
+const restoredWindows = _internals.normalizeCodexRateLimits({
+  primary: { used_percent: 6, window_minutes: 300, resets_at: 1784690000 },
+  secondary: { used_percent: 12, window_minutes: 10080, resets_at: 1785200000 }
+});
+
+assert.equal(restoredWindows.window5h.remainingPercent, 94);
+assert.equal(restoredWindows.weekly.remainingPercent, 88);
+
+const removedAgain = _internals.normalizeCodexRateLimits({
+  primary: { used_percent: 15, window_minutes: 10080, resets_at: 1785280000 },
+  secondary: null
+});
+
+assert.equal(removedAgain.window5h.remainingPercent, undefined);
+assert.equal(removedAgain.weekly.remainingPercent, 85);
+
 console.log('codex rate limit window tests passed');

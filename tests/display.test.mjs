@@ -130,6 +130,10 @@ assert.match(weeklyOnlyCapsule.subtitle, /刷新/);
 assert.doesNotMatch(weeklyOnlyCapsule.subtitle, /5h/);
 assert.equal(weeklyOnlyCapsule.meta, '');
 
+const restoredQuotaCapsule = getCapsuleDisplay(codexOfficial);
+assert.match(restoredQuotaCapsule.subtitle, /5h/);
+assert.match(restoredQuotaCapsule.meta, /7d/);
+
 const officialPendingCapsule = getCapsuleDisplay({
   ...codexOfficial,
   quota: { window5h: {}, weekly: {} }
