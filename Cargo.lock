@@ -129,6 +129,7 @@ name = "codex-taskbar-platform-windows"
 version = "0.1.0"
 dependencies = [
  "codex-taskbar-domain",
+ "libc",
  "serde_json",
  "thiserror",
  "tracing",

@@ -60,9 +60,8 @@ use crate::{
     PlatformError,
     geometry::PixelRect,
     host::{
-        HostRuntime, NativeApiCostEstimate, NativeHostCommand, NativeHostCommandError, NativeHostConfig,
-        NativeHostDetails, NativeHostEvent, NativeHostHandle, NativeHostModel, NativeNotification,
-        NativeNotificationKind, TaskbarParent,
+        HostRuntime, NativeHostCommand, NativeHostCommandError, NativeHostConfig, NativeHostDetails, NativeHostEvent,
+        NativeHostHandle, NativeHostModel, NativeNotification, NativeNotificationKind, TaskbarParent,
     },
     render::{DetailsAction, Direct2dRenderer, details_action_hit_test, details_trend_hit_test},
     render_model::DipRect,
@@ -1182,56 +1181,8 @@ fn post_details_snapshot(window: HWND, snapshot: Option<&str>) {
 /// 特别注意：这里从不传递原始 app-server/SQLite 结构、线程 ID、提示词、
 /// 凭据或绝对路径；数组中的文字均已由应用层完成展示格式化。
 fn details_web_snapshot(details: &NativeHostDetails) -> String {
-    let rows = |rows: &[crate::host::NativeDetailRow]| {
-        rows.iter()
-            .filter(|row| matches!(row.kind, crate::host::NativeDetailRowKind::Value))
-            .map(|row| serde_json::json!({"label": row.label, "value": row.value}))
-            .collect::<Vec<_>>()
-    };
-    let metrics = details
-        .metric_cards
-        .iter()
-        .map(|card| serde_json::json!({"label":card.label,"value":card.value,"detail":card.detail,"progress":card.progress_percent}))
-        .collect::<Vec<_>>();
-    let trend = details
-        .trend_points
-        .iter()
-        .map(|point| serde_json::json!({"label":point.label,"value":point.value}))
-        .collect::<Vec<_>>();
-    let trend_series = details
-        .trend_series
-        .iter()
-        .map(|series| serde_json::json!({
-            "id": series.id,
-            "title": series.title,
-            "unit": series.unit,
-            "empty_message": series.empty_message,
-            "points": series.points.iter().map(|point| serde_json::json!({"label":point.label,"value":point.value})).collect::<Vec<_>>(),
-        }))
-        .collect::<Vec<_>>();
-    // 指标卡只有一列窄宽，保留短美元数值；“官方估算、非订阅账单”的解释
-    // 已由卡片脚注和详情页底部文案承载，避免把用户可读金额拆成多行。
-    let compact_estimate = details.api_cost_estimate.as_ref().map(NativeApiCostEstimate::compact_display_value);
-    serde_json::json!({
-        "schema_version": 1,
-        "kind": "details",
-        "title": details.title,
-        "badge": details.badge,
-        "status": details.status,
-        "updated": details.updated,
-        "hero": {"label":details.hero_label,"value":details.hero_value,"hint":details.hero_hint},
-        "metric_cards": metrics,
-        "primary_rows": rows(&details.primary_rows),
-        "secondary_rows": rows(&details.secondary_rows),
-        "estimate": compact_estimate,
-        "trend_points": trend,
-        "trend_title": details.trend_title,
-        "trend_series": trend_series,
-        "footer": details.footer,
-    })
-    .to_string()
+    crate::web_snapshot::details_web_snapshot(details)
 }
-
 fn close_token_strip(context: &mut WindowContext) {
     context.token_strip_snapshot = None;
     if let Some(window) = context.token_strip_window.take() {

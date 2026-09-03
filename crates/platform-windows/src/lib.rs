@@ -10,6 +10,12 @@ use codex_taskbar_domain::layout::TaskbarAnchor;
 pub mod geometry;
 pub mod host;
 pub mod render_model;
+pub mod web_snapshot;
+
+#[cfg(not(windows))]
+mod portable_time;
+#[cfg(not(windows))]
+pub use portable_time::{format_local_unix_time, local_usage_clock};
 
 #[cfg(all(windows, feature = "direct2d"))]
 pub mod render;

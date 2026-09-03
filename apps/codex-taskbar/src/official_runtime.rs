@@ -32,12 +32,11 @@ use codex_taskbar_domain::{
     official::OfficialFreshness,
     usage::{TokenCounts, UsageSource},
 };
-use codex_taskbar_platform_windows::{
-    ProbePlacement,
-    host::{
-        NativeDetailRow, NativeHostConfig, NativeHostDetails, NativeHostEvent, NativeHostHandle, NativeNotification,
-        NativeNotificationKind, NativeTrendPoint, NativeTrendSeries, TaskbarParent, spawn_native_host,
-    },
+#[cfg(windows)]
+use codex_taskbar_platform_windows::ProbePlacement;
+use codex_taskbar_platform_windows::host::{
+    NativeDetailRow, NativeHostConfig, NativeHostDetails, NativeHostEvent, NativeHostHandle, NativeNotification,
+    NativeNotificationKind, NativeTrendPoint, NativeTrendSeries, TaskbarParent, spawn_native_host,
 };
 use codex_taskbar_settings::{AppConfig, SyncMode, consume_reload_request, request_reload, settings_database_path};
 use codex_taskbar_settings_ui::SettingsAction;
@@ -49,6 +48,10 @@ use crate::{
 };
 
 const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+#[cfg(any(target_os = "macos", test))]
+#[path = "macos_runtime.rs"]
+pub mod macos;
 const ECONOMY_FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// 聚合账本只按批次写入。即使 SQLite 后备每 5 秒轮询，也不会造成高频磁盘写入。
 const LOCAL_LEDGER_FLUSH_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -650,7 +653,6 @@ fn show_consumption_popup(
 
 /// 聚合账本放在应用设置旁边，便于随设置目录整体备份或删除；文件本身不含线程
 /// 标识、Prompt、路径、凭据或 SQLite 正文。
-#[cfg(windows)]
 fn local_usage_ledger_path(settings_path: &Path) -> PathBuf {
     settings_database_path(settings_path)
         .unwrap_or_else(|| settings_path.parent().unwrap_or_else(|| Path::new(".")).join("codex-taskbar.db"))
@@ -658,7 +660,6 @@ fn local_usage_ledger_path(settings_path: &Path) -> PathBuf {
 
 /// 读取旧账本失败时从空账本恢复，并记录不含路径/内容的错误类别。不能让一个
 /// 已损坏的历史文件阻止额度与活动状态监控启动。
-#[cfg(windows)]
 fn load_local_usage_ledger(path: &Path) -> LocalUsageLedger {
     let mut ledger = match LocalUsageLedger::load_sqlite(path) {
         Ok(ledger) => ledger,
@@ -688,7 +689,6 @@ fn load_local_usage_ledger(path: &Path) -> LocalUsageLedger {
 
 /// 将聚合日/小时桶写入 SQLite 事务。调用方负责 5 分钟节流；失败时保留 dirty
 /// 标记，下次批次或退出时重试。
-#[cfg(windows)]
 fn flush_local_usage_ledger(path: &Path, ledger: &mut LocalUsageLedger) {
     if !ledger.is_dirty() {
         return;

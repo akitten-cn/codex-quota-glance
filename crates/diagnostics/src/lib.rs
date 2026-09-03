@@ -138,7 +138,7 @@ where
     let subscriber = tracing_subscriber::registry().with(filter_layer).with(file_layer);
 
     #[cfg(debug_assertions)]
-    let subscriber = subscriber.with(tracing_subscriber::fmt::layer().compact());
+    let subscriber = subscriber.with(tracing_subscriber::fmt::layer().compact().with_writer(std::io::stderr));
 
     subscriber.try_init()?;
 

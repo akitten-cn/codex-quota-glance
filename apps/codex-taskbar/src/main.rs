@@ -10,6 +10,17 @@
 use codex_taskbar::{RunMode, app_data_dir, parse_run_mode, probe_config, redacted_config_summary};
 use codex_taskbar_settings::AppConfig;
 
+#[cfg(target_os = "macos")]
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    codex_taskbar::runtime::macos::run_bridge()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn main() {
+    eprintln!("当前仅支持 Windows 与 macOS");
+}
+
+#[cfg(windows)]
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if let [flag, target, pid] = arguments.as_slice()

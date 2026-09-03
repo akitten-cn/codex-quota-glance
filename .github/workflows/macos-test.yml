@@ -1,0 +1,50 @@
+name: macOS floating test build
+
+on:
+  push:
+    branches: [feature/macos-floating]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Shared data and platform tests
+        run: cargo test --workspace --locked
+      - name: Build app and test packages
+        run: bash scripts/package-macos.sh
+      - name: WKWebView and settings persistence smoke
+        timeout-minutes: 3
+        run: |
+          export CODEX_TASKBAR_DATA_DIR="$RUNNER_TEMP/codex-taskbar-smoke"
+          mkdir -p "$CODEX_TASKBAR_DATA_DIR"
+          app="$(cat dist/macos-app-path.txt)"
+          "$app/Contents/MacOS/CodexTaskbar" --smoke-test
+          test -f "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json"
+          cp "$CODEX_TASKBAR_DATA_DIR/macOS-smoke-results.json" dist/ 2>/dev/null || cp "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json" dist/
+          cp "$CODEX_TASKBAR_DATA_DIR"/smoke-*.png dist/
+      - name: Upload packages and smoke screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-taskbar-macos-${{ matrix.arch }}-test
+          path: |
+            dist/*.zip
+            dist/*.dmg
+            dist/SHA256SUMS-*.txt
+            dist/*smoke*.json
+            dist/smoke-*.png
+          if-no-files-found: warn
