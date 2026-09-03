@@ -278,14 +278,28 @@ fn safe_model_identifier(model: &str) -> bool {
 fn event_local_clock(value: &Value) -> Option<(i32, u8)> {
     let timestamp = value.get("timestamp").and_then(Value::as_str)?;
     let parsed = OffsetDateTime::parse(timestamp, &Rfc3339).ok()?;
-    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    let local = parsed.to_offset(offset);
-    Some((local.year() * 10_000 + i32::from(u8::from(local.month())) * 100 + i32::from(local.day()), local.hour()))
+    #[cfg(target_os = "macos")]
+    {
+        return codex_taskbar_platform_windows::local_usage_clock_at(parsed.unix_timestamp());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+        let local = parsed.to_offset(offset);
+        Some((local.year() * 10_000 + i32::from(u8::from(local.month())) * 100 + i32::from(local.day()), local.hour()))
+    }
 }
 
 fn current_local_day_key() -> i32 {
-    let local = OffsetDateTime::now_utc().to_offset(UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC));
-    local.year() * 10_000 + i32::from(u8::from(local.month())) * 100 + i32::from(local.day())
+    #[cfg(target_os = "macos")]
+    {
+        return codex_taskbar_platform_windows::local_usage_clock().0;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let local = OffsetDateTime::now_utc().to_offset(UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC));
+        local.year() * 10_000 + i32::from(u8::from(local.month())) * 100 + i32::from(local.day())
+    }
 }
 
 #[cfg(windows)]

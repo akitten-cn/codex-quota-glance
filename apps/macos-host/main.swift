@@ -38,6 +38,7 @@ final class Surface: NSObject, WKNavigationDelegate, WKUIDelegate {
     let web: WKWebView
     let role: String
     var loaded = false
+    var desiredVisible = true
     var onReady: (() -> Void)?
     init(role: String, size: NSSize, owner: AppDelegate, bootstrap: String) {
         self.role = role
@@ -88,7 +89,7 @@ final class Surface: NSObject, WKNavigationDelegate, WKUIDelegate {
         if activate { NSApp.activate(ignoringOtherApps: true); panel.makeKeyAndOrderFront(nil) }
         else { panel.orderFrontRegardless() }
     }
-    func hide() { panel.orderOut(nil) }
+    func hide() { desiredVisible = false; panel.orderOut(nil) }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler {
@@ -125,7 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             return event
         }
         startEngine()
-        if smoke { DispatchQueue.main.asyncAfter(deadline: .now() + 7) { self.runSmoke() } }
+        if smoke {
+            fputs("smoke: host launched\n", stderr)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7) { self.runSmoke() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 75) { if !self.quitting { self.alert("smoke: 超时") } }
+        }
     }
     func startEngine() {
         let process = Process()
@@ -172,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             let next = payload["settings"] as? [String: Any] ?? [:]
             let changed = !NSDictionary(dictionary: next).isEqual(NSDictionary(dictionary: settings))
             let first = settings.isEmpty
+            if first && smoke { fputs("smoke: first engine snapshot\n", stderr) }
             settings = next
             if first { createTaskbar() }
             if changed { placeTaskbar(restore: first); applyVisualSettings() }
@@ -206,13 +212,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         surfaces[role] = surface
         surface.onReady = { [weak self, weak surface] in
             guard let self = self, let surface = surface else { return }
+            if self.smoke { fputs("smoke: loaded \(role)\n", stderr) }
             if role == "taskbar", let value = self.latest["taskbar"] { surface.emit(value); self.applyVisualSettings() }
             if role == "details", let value = self.latest["details"] { surface.emit(value) }
             if role == "popup", let value = self.popup { surface.emit(value) }
+            self.applyVisualSettings()
             // 初始演示数据在窗口可见前被真实快照替换。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { surface.reveal(activate: role == "settings") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { if surface.desiredVisible { surface.reveal(activate: role == "settings") } }
         }
-        surface.web.loadHTMLString(html, baseURL: Bundle.main.resourceURL)
+        let accessibleHTML = html.replacingOccurrences(of: "</head>", with: "<style>.mac-reduce-motion *,.mac-reduce-motion *::before,.mac-reduce-motion *::after{animation:none!important;transition:none!important}</style></head>")
+        surface.web.loadHTMLString(accessibleHTML, baseURL: Bundle.main.resourceURL)
         return surface
     }
     func createTaskbar() {
@@ -253,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let opacity = settings["opacity"] as? Double ?? 70
         let frost = 0.13 + (opacity - 20) / 80 * 0.45
         surfaces["taskbar"]?.emit(["codexTaskbarPreviewWidth": settings["width"] ?? 440, "codexTaskbarPreviewFrost": frost])
-        for surface in surfaces.values { surface.web.evaluateJavaScript("window.__macReduceMotion=\(settings["reduce_motion"] as? Bool == true ? "true" : "false");", completionHandler: nil) }
+        for surface in surfaces.values { surface.web.evaluateJavaScript("window.__macReduceMotion=\(settings["reduce_motion"] as? Bool == true ? "true" : "false");document.documentElement.classList.toggle('mac-reduce-motion',window.__macReduceMotion);", completionHandler: nil) }
     }
     func anchored(_ surface: Surface) {
         guard let bar = surfaces["taskbar"]?.panel else { return }
@@ -267,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
     @objc func showDetails() {
         surfaces["popup"]?.hide()
-        if let existing = surfaces["details"] { anchored(existing); existing.reveal(); return }
+        if let existing = surfaces["details"] { existing.desiredVisible = true; anchored(existing); existing.reveal(); return }
         let work = (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let size = NSSize(width: min(960, work.width - 30), height: min(720, work.height - 30))
         let html = resource("details-card-reference.html").replacingOccurrences(of: "<html", with: "<html class=\"details-embed\"")
@@ -276,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
     @objc func showSettings() {
         surfaces["popup"]?.hide(); surfaces["details"]?.hide()
-        if let existing = surfaces["settings"] { existing.panel.center(); clamp(existing.panel); existing.reveal(activate: true); return }
+        if let existing = surfaces["settings"] { existing.desiredVisible = true; existing.panel.center(); clamp(existing.panel); existing.reveal(activate: true); return }
         let work = (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let size = NSSize(width: min(1040, work.width - 30), height: min(800, work.height - 30))
         var snapshot = settings
@@ -294,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func showPopup() {
         popupTimer?.invalidate()
         let surface: Surface
-        if let existing = surfaces["popup"] { surface = existing; if let popup = popup { surface.emit(popup) }; surface.reveal() }
+        if let existing = surfaces["popup"] { surface = existing; surface.desiredVisible = true; if let popup = popup { surface.emit(popup) }; surface.reveal() }
         else { surface = make("popup", size: NSSize(width: min(600, (targetScreen()?.visibleFrame.width ?? 1000) - 30), height: 130), html: fluid("consume-embed")) }
         anchored(surface)
         popupTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak surface] _ in surface?.hide() }
@@ -355,6 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
     // 构建机上的真实 WKWebView 冒烟：不读取开发者登录/会话，不使用伪业务数据。
     func runSmoke() {
+        fputs("smoke: opening details and settings\n", stderr)
         guard surfaces["taskbar"]?.loaded == true, !latest.isEmpty else { alert("smoke: 胶囊或数据桥未就绪"); return }
         showDetails(); showSettings()
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
@@ -370,6 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
     func finishSmoke() {
+        fputs("smoke: checking reopened settings\n", stderr)
         guard let surface = surfaces["settings"] else { alert("smoke: 设置重开失败"); return }
         surface.web.evaluateJavaScript("({width:document.getElementById('widthRange').value,buttons:document.querySelectorAll('button').length,scroll:document.querySelector('.content').scrollHeight,client:document.querySelector('.content').clientHeight})") { result, error in
             guard error == nil, let result = result as? [String: Any], result["width"] as? String == "283" else { self.alert("smoke: 设置重开后未持久化"); return }

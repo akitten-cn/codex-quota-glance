@@ -15,7 +15,7 @@ pub mod web_snapshot;
 #[cfg(not(windows))]
 mod portable_time;
 #[cfg(not(windows))]
-pub use portable_time::{format_local_unix_time, local_usage_clock};
+pub use portable_time::{format_local_unix_time, local_usage_clock, local_usage_clock_at};
 
 #[cfg(all(windows, feature = "direct2d"))]
 pub mod render;

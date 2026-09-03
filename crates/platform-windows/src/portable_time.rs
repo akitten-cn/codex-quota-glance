@@ -37,6 +37,19 @@ pub fn local_usage_clock() -> (i32, u8) {
     (19700101, 0)
 }
 
+pub fn local_usage_clock_at(timestamp: i64) -> Option<(i32, u8)> {
+    #[cfg(unix)]
+    {
+        let t = local(timestamp)?;
+        Some(((t.tm_year + 1900) * 10000 + (t.tm_mon + 1) * 100 + t.tm_mday, t.tm_hour as u8))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = timestamp;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
