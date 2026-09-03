@@ -26,6 +26,7 @@ const nodeTests = [
   'tests/update-window-source.test.mjs',
   'tests/quota-recovery-dialog-source.test.mjs',
   'tests/local-backend-source.test.mjs',
+  'tests/local-backend-auth.test.mjs',
   'tests/detail-panel-source.test.mjs',
   'tests/style.test.mjs',
   'tests/desktop-launcher.test.mjs',

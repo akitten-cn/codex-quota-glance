@@ -400,9 +400,11 @@ function normalizeApiKey(value) {
 
 function normalizeBearerToken(value) {
   const text = String(value ?? '').trim();
-  const bearerMatch = text.match(/Bearer\s+([A-Za-z0-9._=-]+)/i);
+  const bearerMatch = text.match(/\bBearer\s+([^\s,]+)/i);
   if (bearerMatch?.[1]) return bearerMatch[1].trim();
-  return text;
+  const authorizationMatch = text.match(/^Authorization\s*:\s*([^\s,]+)/i);
+  if (authorizationMatch?.[1]) return authorizationMatch[1].trim();
+  return text.split(/\s+/)[0] ?? '';
 }
 
 function normalizeProviders(value, baseNewApi, basePricingProfile) {

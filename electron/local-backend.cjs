@@ -760,7 +760,7 @@ async function refreshAccountAndTopup({ baseUrl, accessToken, apiUser, force, ac
 
 async function diagnoseUserSelf(payload) {
   const baseUrl = trimTrailingSlash(payload.baseUrl);
-  const accessToken = String(payload.accessToken || '');
+  const accessToken = cleanAuthorizationToken(payload.accessToken);
   const apiUser = String(payload.newApiUser || '');
   if (!baseUrl || !accessToken) throw new Error('baseUrl and accessToken are required');
   const url = new URL('/api/user/self', `${baseUrl}/`);
@@ -1988,8 +1988,9 @@ function readSummaryContext(request, requestUrl) {
 }
 
 function newApiAuthHeaders(token, apiUser, apifoxLike = false) {
+  const clean = cleanAuthorizationToken(token);
   return pruneHeaders({
-    Authorization: `Bearer ${String(token || '').replace(/^Bearer\s+/i, '').trim()}`,
+    Authorization: `Bearer ${clean}`,
     'New-Api-User': String(apiUser || '').trim(),
     ...(apifoxLike ? {
       'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
@@ -2000,20 +2001,30 @@ function newApiAuthHeaders(token, apiUser, apifoxLike = false) {
 }
 
 function maskedNewApiHeaders(token, apiUser, apifoxLike = false) {
+  const clean = cleanAuthorizationToken(token);
   return {
-    Authorization: `Bearer ${maskSecret(String(token || '').replace(/^Bearer\s+/i, '').trim())}`,
+    Authorization: `Bearer ${maskSecret(clean)}`,
     'New-Api-User': String(apiUser || '').trim(),
     ...(apifoxLike ? { 'User-Agent': 'Apifox/1.0.0 (https://apifox.com)', Accept: '*/*' } : {})
   };
 }
 
 function newApiHeaderDiagnostics(token) {
-  const clean = String(token || '').replace(/^Bearer\s+/i, '').trim();
+  const clean = cleanAuthorizationToken(token);
   return {
     tokenTrimmedLength: clean.length,
     tokenHashPrefix: sha256(clean).slice(0, 12),
     authorizationPrefix: clean ? 'Bearer ' : ''
   };
+}
+
+function cleanAuthorizationToken(token) {
+  const text = String(token || '').trim();
+  const bearerMatch = text.match(/\bBearer\s+([^\s,]+)/i);
+  if (bearerMatch?.[1]) return bearerMatch[1].trim();
+  const authorizationMatch = text.match(/^Authorization\s*:\s*([^\s,]+)/i);
+  if (authorizationMatch?.[1]) return authorizationMatch[1].trim();
+  return text.split(/\s+/)[0] || '';
 }
 
 function contentType(filePath) {
@@ -2277,6 +2288,7 @@ module.exports = {
     parseCodexTokenEvents,
     settleCodexActivity,
     codexActivityUpdate,
+    cleanAuthorizationToken,
     makeSyncKey,
     keyFingerprint
   }

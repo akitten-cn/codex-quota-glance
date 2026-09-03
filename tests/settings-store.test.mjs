@@ -174,6 +174,12 @@ const normalizedAccessToken = updateNewApiSettings(loaded, 'accessToken', 'Autho
 assert.equal(normalizedAccessToken.newApi.accessToken, 'acct-tok');
 const normalizedBase64AccessToken = updateNewApiSettings(loaded, 'accessToken', 'Authorization: Bearer tok=');
 assert.equal(normalizedBase64AccessToken.newApi.accessToken, 'tok=');
+const normalizedModernAccessToken = updateNewApiSettings(
+  loaded,
+  'accessToken',
+  'Authorization: Bearer AbC-12_./+xy==\nNew-Api-User: 5781'
+);
+assert.equal(normalizedModernAccessToken.newApi.accessToken, 'AbC-12_./+xy==');
 
 const withSecret = {
   ...updated,
