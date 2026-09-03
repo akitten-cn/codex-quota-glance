@@ -301,6 +301,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         var html = resource("settings-layout-reference.html").replacingOccurrences(of: "<html", with: "<html class=\"settings-embed\"").replacingOccurrences(of: "</head>", with: css + "</head>")
         html = html.replacingOccurrences(of: "任务栏布局", with: "浮窗布局").replacingOccurrences(of: "任务栏宽度", with: "浮窗宽度").replacingOccurrences(of: "任务栏避让", with: "边缘偏移").replacingOccurrences(of: "默认优先放在副屏，并避让通知区域与 TrafficMonitor。", with: "桌面浮动显示，可直接拖动胶囊；无副屏时自动使用主屏。")
         html = html.replacingOccurrences(of: "自动使用 Windows 系统代理 / PAC", with: "更新页面使用系统浏览器与本机网络设置")
+        html = html.replacingOccurrences(of: "默认优先放在副屏[^<]*TrafficMonitor。", with: "桌面浮动显示，可直接拖动胶囊；无副屏时自动使用主屏。", options: .regularExpression)
+            .replacingOccurrences(of: "任务栏", with: "浮窗")
+            .replacingOccurrences(of: "</head>", with: "<style>[hidden]{display:none!important}input[type=range]{-webkit-appearance:none;height:5px;background:#c7dce4;border:0;border-radius:4px}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;border-radius:50%;background:#23adc2}</style></head>")
         // Mac 浮窗按逻辑点设置宽度；不能套用 Windows 的物理像素 / DPR 换算。
         html = html.replacingOccurrences(of: "const previewScale = Math.max(1, Number(window.devicePixelRatio) || 1);", with: "const previewScale = 1;")
             .replacingOccurrences(of: "58 / previewScale", with: "44 / previewScale")
