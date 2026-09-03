@@ -114,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("CodexTaskbar")
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if smoke { fputs("smoke: didFinishLaunching entered\n", stderr) }
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.title = "◉"
@@ -133,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
     func startEngine() {
+        if smoke { fputs("smoke: starting engine\n", stderr) }
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/codex-taskbar-engine")
         process.arguments = ["--macos-bridge"]
@@ -147,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             guard let self = self, !self.quitting else { return }
             self.alert("数据引擎已退出（\(child.terminationStatus)），请重新打开软件。")
         } }
-        do { try process.run(); engine = process } catch { alert("数据引擎启动失败：\(error.localizedDescription)"); return }
+        do { try process.run(); engine = process; if smoke { fputs("smoke: engine spawned\n", stderr) } } catch { alert("数据引擎启动失败：\(error.localizedDescription)"); return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             var pending = Data()
@@ -401,6 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 }
 
+if ProcessInfo.processInfo.arguments.contains("--smoke-test") { fputs("smoke: entering AppKit\n", stderr) }
 let app = NSApplication.shared
 if !ProcessInfo.processInfo.arguments.contains("--smoke-test"), let identifier = Bundle.main.bundleIdentifier {
     let other = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
@@ -408,4 +411,4 @@ if !ProcessInfo.processInfo.arguments.contains("--smoke-test"), let identifier =
 }
 let delegate = AppDelegate()
 app.delegate = delegate
-app.run()
+withExtendedLifetime(delegate) { app.run() }
