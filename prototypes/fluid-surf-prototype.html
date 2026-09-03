@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Taskbar · WebGL 流光原型</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Microsoft YaHei UI", system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #07101c; color: #eef7ff; }
+    main { width: min(980px, calc(100vw - 32px)); padding: 28px; border-radius: 24px; background: linear-gradient(145deg, #0d1930, #07101c); box-shadow: 0 20px 70px #000a; }
+    h1 { margin: 0 0 8px; font-size: 21px; font-weight: 600; }
+    p { margin: 0 0 24px; color: #aebbd0; font-size: 14px; }
+    .wave-shell { position: relative; aspect-ratio: 1720 / 420; overflow: hidden; border-radius: 22px; background: #05080f; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .metric { position: absolute; z-index: 1; pointer-events: none; text-shadow: 0 2px 10px #04101c; }
+    .metric strong { display: block; color: #f4fbff; font-size: clamp(14px, 2vw, 31px); }
+    .metric span { color: #c5d6eb; font-size: clamp(10px, 1.25vw, 19px); }
+    .today { left: 4.5%; top: 24%; }
+    .cache { left: 4.5%; bottom: 21%; }
+    .quota { right: 4.5%; top: 20%; text-align: right; }
+    .quota strong { font-size: clamp(25px, 4vw, 58px); }
+    .shore { right: 4.5%; bottom: 21%; text-align: right; }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center; margin-top: 20px; color: #cbd8eb; font-size: 14px; }
+    label { display: flex; gap: 9px; align-items: center; }
+    input[type="range"] { accent-color: #53e5ff; }
+    button { border: 0; border-radius: 10px; padding: 8px 12px; color: #eafaff; background: #1b3157; font: inherit; cursor: pointer; }
+    output { min-width: 48px; color: #57eaff; font-variant-numeric: tabular-nums; }
+    .legend { margin-top: 16px; color: #8da0bd; font-size: 13px; line-height: 1.65; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>流式额度 · WebGL 流光原型</h1>
+    <p>左侧已消耗区域以连续流场、柔光涌动和不规则前沿增加层次；右侧保持干净的玻璃底。</p>
+    <div class="wave-shell">
+      <canvas id="ocean" width="1720" height="420" aria-label="WebGL 动态流光进度条原型"></canvas>
+      <div class="metric today"><strong>今日 3.1M</strong></div>
+      <div class="metric cache"><span>缓存 62% · 流光</span></div>
+      <div class="metric quota"><strong id="remaining">46%</strong></div>
+      <div class="metric shore"><span>Weekly 剩余 · 未消耗</span></div>
+    </div>
+    <div class="controls">
+      <button id="toggle" type="button">暂停</button>
+      <label>已消耗 <input id="consumed" type="range" min="12" max="88" value="54"><output id="consumedOut">54%</output></label>
+      <label>流光速度 <input id="speed" type="range" min="55" max="145" value="100"><output id="speedOut">1.00×</output></label>
+      <label>流光密度 <input id="wash" type="range" min="5" max="20" value="12"><output id="washOut">12</output></label>
+    </div>
+    <div class="legend">左：深浅流场和错落的柔光带；前沿：连续、不规则的液态高光；右：干净的未消耗玻璃区。</div>
+  </main>
+  <script>
+    (() => {
+      const canvas = document.getElementById('ocean');
+      const gl = canvas.getContext('webgl2', { alpha: true, antialias: true });
+      const toggle = document.getElementById('toggle');
+      const consumed = document.getElementById('consumed');
+      const speed = document.getElementById('speed');
+      const wash = document.getElementById('wash');
+      const consumedOut = document.getElementById('consumedOut');
+      const speedOut = document.getElementById('speedOut');
+      const washOut = document.getElementById('washOut');
+      const remaining = document.getElementById('remaining');
+      if (!gl) throw new Error('当前浏览器不支持 WebGL2。');
+
+      const vertex = `#version 300 es
+      in vec2 a_position;
+      void main() { gl_Position = vec4(a_position, 0.0, 1.0); }`;
+      const fragment = `#version 300 es
+      precision highp float;
+      out vec4 outColor;
+      uniform vec2 u_resolution;
+      uniform float u_time;
+      uniform float u_consumed;
+      uniform float u_wash;
+
+      float hash21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+      float noise(vec2 p) {
+        vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash21(i), hash21(i + vec2(1., 0.)), f.x), mix(hash21(i + vec2(0., 1.)), hash21(i + vec2(1., 1.)), f.x), f.y);
+      }
+      float fbm(vec2 p) {
+        float v = 0.0, a = .52;
+        for (int i = 0; i < 5; i++) { v += a * noise(p); p = p * 2.04 + vec2(19.1, 7.7); a *= .5; }
+        return v;
+      }
+      float roundBox(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r; }
+      float smooth01(float a, float b, float x) { return smoothstep(a, b, x); }
+
+      void main() {
+        vec2 st = gl_FragCoord.xy / u_resolution;
+        float aspect = u_resolution.x / u_resolution.y;
+        vec2 p = (st - .5) * vec2(aspect, 1.0);
+        vec2 box = vec2(aspect * .455, .305);
+        float shell = smoothstep(.007, -.007, roundBox(p, box, .305));
+        vec2 uv = (p + box) / (box * 2.0);
+        float t = u_time;
+        float v = uv.y;
+        // 进度边界由两组不同速度的低频流场共同扭曲：连续演化、没有周期归零，
+        // 因此不会像固定正弦线一样反复走回同一个形状。
+        float shoreWarp = fbm(vec2(v * 2.17 - t * .082, .7 + t * .031));
+        float boundary = u_consumed
+          + (fbm(vec2(v * 4.13 - t * .117 + shoreWarp * 1.9, 1.7 + t * .051)) - .5) * .046
+          + (fbm(vec2(v * 9.7 + t * .071, 6.3)) - .5) * .012;
+        float seaMask = 1.0 - smoothstep(boundary - .004, boundary + .004, uv.x);
+
+        // 右侧未消耗区域保持干净的半透明玻璃，不再模拟沙滩、水渍或泡沫。
+        vec3 dryGlass = vec3(.052, .069, .105);
+        float deep = fbm(vec2(uv.x * 3.9 - t * .09, v * 5.1 + t * .018));
+        vec3 liquidBase = mix(vec3(.025, .075, .24), vec3(.025, .38, .56), .30 + deep * .62);
+        liquidBase *= .83 + .16 * (1.0 - v);
+        vec3 col = mix(dryGlass, liquidBase, seaMask);
+
+        // 左侧采用横向推进的流体光丝，而非数条贯穿全高的竖线。每条光丝都有独立
+        // 的速度、上下漂移与局部折射，端点淡出后再次从左侧进入，因而连续而不回跳。
+        float flowDensity = mix(.60, 1.42, clamp(u_wash / 20.0, 0.0, 1.0));
+        float filaments = 0.0;
+        float softGlow = 0.0;
+        for (int i = 0; i < 8; i++) {
+          float fi = float(i);
+          float speed = .024 + fi * .0053;
+          float travel = fract(t * speed + fi * .127);
+          float fade = smoothstep(.0, .10, travel) * (1.0 - smoothstep(.78, 1.0, travel));
+          float baseY = .13 + .74 * hash21(vec2(fi * 3.71, 4.19));
+          float sway = sin((uv.x * (7.0 + fi * .67) - t * (.46 + fi * .041)) + fi * 4.3) * (.018 + fi * .0017);
+          sway += (fbm(vec2(uv.x * 5.2 - t * .11 + fi * 2.8, fi * 1.9)) - .5) * .055;
+          float yCurve = baseY + sway;
+          float xCenter = travel * (boundary + .14) - .075;
+          float body = exp(-pow((uv.x - xCenter) / (.11 + fi * .009), 2.0));
+          float strand = exp(-pow((v - yCurve) / (.010 + fi * .0013), 2.0));
+          float halo = exp(-pow((v - yCurve) / (.052 + fi * .003), 2.0));
+          filaments += strand * body * fade * seaMask;
+          softGlow += halo * body * fade * seaMask;
+        }
+
+        // 慢速域扭曲形成内部深浅层次；光丝本身是横向弯曲的，不会读成闪电或固定线条。
+        vec2 flowPoint = vec2(uv.x * 5.5 - t * .15, v * 4.8 + t * .027);
+        float domain = fbm(flowPoint + vec2(fbm(flowPoint * 1.7), fbm(flowPoint * 1.2)) * 1.15);
+        float current = smoothstep(.48, .79, domain) * seaMask;
+        vec3 cyan = vec3(.12, .80, .94);
+        vec3 blue = vec3(.10, .31, .96);
+        vec3 fluidTint = mix(blue, cyan, .30 + .52 * fbm(vec2(v * 3.5, t * .043)));
+        col += fluidTint * softGlow * .38;
+        col += mix(vec3(.16, .55, .98), vec3(.55, .96, 1.0), domain) * filaments * .74;
+        col += vec3(.035, .18, .31) * current * .26;
+
+        // 少量被流场带走的微光，只有靠左的已消耗区可见，不使用规则点阵或长直线。
+        float glitterNoise = fbm(vec2(uv.x * 31.0 - t * .54, v * 19.0 + t * .13));
+        float leftBias = 1.0 - smoothstep(boundary * .50, boundary + .02, uv.x);
+        float glitter = smoothstep(.82, .91, glitterNoise) * seaMask * leftBias;
+        col += vec3(.54, .96, 1.0) * glitter * (.05 + softGlow * .17);
+
+        // 进度前沿仍保留一条柔软、不规则的液态高光，表示已消耗与未消耗的交界。
+        float edgeNoise = fbm(vec2(v * 13.5 - t * .18, 3.4 + t * .051));
+        float liquidEdge = exp(-abs(uv.x - boundary) * (73.0 + edgeNoise * 35.0));
+        col += mix(vec3(.12, .40, .78), vec3(.36, .88, .98), edgeNoise) * liquidEdge * .72;
+
+        float border = smoothstep(.006, 0.0, abs(roundBox(p, box, .305)) - .002);
+        col += vec3(.30, .55, .82) * border * .34;
+        outColor = vec4(col, shell * mix(.74, .97, seaMask));
+      }`;
+
+      function shader(type, source) {
+        const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+        return s;
+      }
+      const program = gl.createProgram();
+      gl.attachShader(program, shader(gl.VERTEX_SHADER, vertex)); gl.attachShader(program, shader(gl.FRAGMENT_SHADER, fragment)); gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+      const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+      gl.useProgram(program);
+      const pos = gl.getAttribLocation(program, 'a_position'); gl.enableVertexAttribArray(pos); gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+      const uniforms = { resolution: gl.getUniformLocation(program, 'u_resolution'), time: gl.getUniformLocation(program, 'u_time'), consumed: gl.getUniformLocation(program, 'u_consumed'), wash: gl.getUniformLocation(program, 'u_wash') };
+      let playing = true, elapsed = 0, previous = performance.now();
+      function frame(now) {
+        const delta = Math.min(.05, (now - previous) / 1000); previous = now; if (playing) elapsed += delta;
+        gl.viewport(0, 0, canvas.width, canvas.height); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.uniform2f(uniforms.resolution, canvas.width, canvas.height); gl.uniform1f(uniforms.time, elapsed * Number(speed.value) / 100); gl.uniform1f(uniforms.consumed, Number(consumed.value) / 100); gl.uniform1f(uniforms.wash, Number(wash.value) / 20); gl.drawArrays(gl.TRIANGLES, 0, 6);
+        requestAnimationFrame(frame);
+      }
+      toggle.addEventListener('click', () => { playing = !playing; toggle.textContent = playing ? '暂停' : '继续'; });
+      consumed.addEventListener('input', () => { consumedOut.textContent = `${consumed.value}%`; remaining.textContent = `${100 - consumed.value}%`; });
+      speed.addEventListener('input', () => { speedOut.textContent = `${(Number(speed.value) / 100).toFixed(2)}×`; });
+      wash.addEventListener('input', () => { washOut.textContent = wash.value; });
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>

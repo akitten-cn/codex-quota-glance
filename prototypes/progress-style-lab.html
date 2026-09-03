@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Taskbar · 进度条视觉实验室</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Segoe UI Variable", "Microsoft YaHei UI", sans-serif; background: #080d18; color: #f4f7ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(900px 440px at 18% -10%, #163562 0%, transparent 65%), #080d18; }
+    main { width: min(1180px, calc(100vw - 48px)); margin: 44px auto 70px; }
+    h1 { margin: 0; letter-spacing: -.055em; font-size: clamp(29px, 4vw, 46px); }
+    .sub { margin: 12px 0 26px; max-width: 760px; color: #aebbd4; font-size: 15px; line-height: 1.7; }
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding: 16px 18px; border: 1px solid rgba(124, 166, 238, .2); border-radius: 18px; background: rgba(13, 21, 37, .72); backdrop-filter: blur(18px); }
+    label { display: inline-flex; align-items: center; gap: 10px; color: #b8c5dd; font-size: 14px; white-space: nowrap; }
+    input[type="range"] { width: 180px; accent-color: #5fe2ff; }
+    select { border: 1px solid rgba(116, 153, 216, .42); border-radius: 10px; padding: 7px 10px; background: #111c30; color: #ecf2ff; font: inherit; }
+    output { min-width: 45px; color: #65e9ff; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .hint { color: #7e8ba4; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
+    .card { position: relative; padding: 19px; overflow: hidden; border: 1px solid rgba(128, 153, 196, .18); border-radius: 22px; background: linear-gradient(145deg, rgba(18, 29, 50, .88), rgba(9, 14, 25, .88)); box-shadow: 0 16px 45px rgba(0, 0, 0, .22); transition: border-color .2s ease, transform .2s ease; }
+    .card:hover, .card.selected { border-color: rgba(100, 235, 255, .76); transform: translateY(-2px); }
+    .head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+    .name { font-size: 18px; font-weight: 720; letter-spacing: -.025em; }
+    .tag { color: #90a5c9; font-size: 12px; }
+    canvas { display: block; width: 100%; height: 100px; border-radius: 999px; }
+    .note { min-height: 42px; margin: 14px 0 15px; color: #aebbd4; font-size: 13px; line-height: 1.6; }
+    button { cursor: pointer; border: 1px solid rgba(120, 155, 215, .38); border-radius: 11px; padding: 8px 12px; color: #dce8ff; background: #13213a; font: inherit; font-size: 13px; transition: background .16s ease, border-color .16s ease; }
+    button:hover { background: #19325a; border-color: #63e4ff; }
+    .status { margin-top: 21px; padding: 14px 17px; border-left: 3px solid #61e8ff; border-radius: 11px; background: rgba(14, 24, 43, .76); color: #b8c5dd; font-size: 14px; line-height: 1.6; }
+    .status strong { color: #f3f7ff; }
+    @media (max-width: 760px) { main { width: min(100% - 28px, 620px); margin-top: 24px; } .grid { grid-template-columns: 1fr; } .controls { gap: 12px; } }
+    @media (prefers-reduced-motion: reduce) { .card { transition: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>任务栏进度条 · 视觉实验室</h1>
+    <p class="sub">四种方案都遵循同一语义：左侧为已消耗，右侧为干净的半透明未消耗玻璃区；数值与文字保持可读，动画只作为低调的状态氛围。选择后再做原生实现与数据接线。</p>
+    <section class="controls" aria-label="实验室控制">
+      <label>已消耗 <input id="progress" type="range" min="5" max="95" value="54"><output id="progressOut">54%</output></label>
+      <label>运行状态 <select id="state"><option value="idle">空闲 · 青蓝</option><option value="thinking">思考中 · 紫蓝</option><option value="working">执行中 · 琥珀</option><option value="complete">完成 · 绿色</option><option value="error">异常 · 红色</option></select></label>
+      <span class="hint">所有预览均以 60 fps 绘制；常驻版会在空闲时自动降帧。</span>
+    </section>
+
+    <section class="grid" aria-label="四种进度条设计">
+      <article class="card" data-style="silk">
+        <div class="head"><span class="name">A · 丝绸流光</span><span class="tag">推荐 · 克制、有生命感</span></div>
+        <canvas aria-label="丝绸流光进度条"></canvas>
+        <p class="note">多层弯曲光丝从左向右错峰推进，避免闪电墙和硬边；适合主任务栏的长期可见状态。</p>
+        <button type="button">选择 A</button>
+      </article>
+      <article class="card" data-style="mist">
+        <div class="head"><span class="name">B · 雾化流场</span><span class="tag">干净、低频</span></div>
+        <canvas aria-label="雾化流场进度条"></canvas>
+        <p class="note">只有极慢移动的透明雾层与折射层次，不使用粒子、白色反光或突然扫过的亮带。</p>
+        <button type="button">选择 B</button>
+      </article>
+      <article class="card" data-style="velvet">
+        <div class="head"><span class="name">C · 天鹅绒光泽</span><span class="tag">温和、质感优先</span></div>
+        <canvas aria-label="天鹅绒光泽进度条"></canvas>
+        <p class="note">一层极淡的斜向亮面缓慢移动，像材质随光源呼吸；整体比流光更少动作、更容易长期观看。</p>
+        <button type="button">选择 C</button>
+      </article>
+      <article class="card" data-style="ember">
+        <div class="head"><span class="name">D · 细雨微光</span><span class="tag">细节、没有脏感</span></div>
+        <canvas aria-label="细雨微光进度条"></canvas>
+        <p class="note">稀疏而模糊的小光点以不同速度漂移，像悬浮在玻璃下，不形成规则扫描线或明显粒子特效。</p>
+        <button type="button">选择 D</button>
+      </article>
+      <article class="card" data-style="ripple">
+        <div class="head"><span class="name">E · 柔波折光</span><span class="tag">最接近液体、不过度拟真</span></div>
+        <canvas aria-label="柔波折光进度条"></canvas>
+        <p class="note">用几层低幅度的折射波纹改变颜色深浅，不模拟海浪、不出现浪头，只留下有机的不规则边缘。</p>
+        <button type="button">选择 E</button>
+      </article>
+      <article class="card" data-style="halo">
+        <div class="head"><span class="name">F · 静谧光晕</span><span class="tag">极简、极低干扰</span></div>
+        <canvas aria-label="静谧光晕进度条"></canvas>
+        <p class="note">只在左侧形成非常缓慢的光晕呼吸，优先保证数字和额度信息可读；适合不想看明显动画的场景。</p>
+        <button type="button">选择 F</button>
+      </article>
+    </section>
+    <div id="status" class="status"><strong>尚未选择方案。</strong> 这轮重点比较“干净且慢”的动效；不再保留白色前沿、闪电感、快速粒子或脏的背景纹理。</div>
+  </main>
+  <script>
+    (() => {
+      const entries = [...document.querySelectorAll('.card')].map(card => ({ card, style: card.dataset.style, canvas: card.querySelector('canvas'), ctx: card.querySelector('canvas').getContext('2d') }));
+      const progress = document.querySelector('#progress');
+      const progressOut = document.querySelector('#progressOut');
+      const state = document.querySelector('#state');
+      const status = document.querySelector('#status');
+      let activeStyle = null;
+      const palettes = {
+        idle: ['#25d5ff', '#316ef9', '#bdf6ff'], thinking: ['#9a6dff', '#456fe8', '#e9ddff'],
+        working: ['#ffb52e', '#ff6b35', '#fff0a7'], complete: ['#4fe29d', '#14a774', '#e0ffed'], error: ['#ff5d7c', '#cf3155', '#ffd7e0']
+      };
+      function rgb(hex, alpha = 1) { const n = Number.parseInt(hex.slice(1), 16); return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`; }
+      function round(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+      function resize(entry) { const dpr = Math.min(devicePixelRatio || 1, 2); const rect = entry.canvas.getBoundingClientRect(); const w = Math.round(rect.width * dpr), h = Math.round(rect.height * dpr); if (entry.canvas.width !== w || entry.canvas.height !== h) { entry.canvas.width = w; entry.canvas.height = h; } entry.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return rect; }
+      function grad(ctx, x0, y0, x1, y1, colors) { const g = ctx.createLinearGradient(x0, y0, x1, y1); colors.forEach(([stop, color]) => g.addColorStop(stop, color)); return g; }
+      function edgeAt(y, w, h, p, t) {
+        const seed = Math.sin(y * .105 + t * .47) * 1.55 + Math.sin(y * .245 - t * .29 + 1.4) * .85;
+        return w * p + seed;
+      }
+      function consumedPath(ctx, w, h, p, t) {
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(edgeAt(0, w, h, p, t), 0);
+        for (let y = 4; y <= h; y += 4) ctx.lineTo(edgeAt(y, w, h, p, t), y);
+        ctx.lineTo(0, h); ctx.closePath();
+      }
+      function base(ctx, w, h, p, t) {
+        const radius = h / 2; ctx.clearRect(0, 0, w, h);
+        round(ctx, 0, 0, w, h, radius); ctx.fillStyle = 'rgba(12, 18, 31, .94)'; ctx.fill();
+        ctx.save(); round(ctx, 1, 1, w - 2, h - 2, radius - 1); ctx.clip();
+        const rest = grad(ctx, 0, 0, w, h, [[0, 'rgba(16, 27, 48, .70)'], [1, 'rgba(30, 39, 62, .52)']]); ctx.fillStyle = rest; ctx.fillRect(0, 0, w, h);
+        ctx.save(); consumedPath(ctx, w, h, p, t); ctx.clip();
+        return radius;
+      }
+      function finish(ctx, w, h, p, t, palette) {
+        ctx.restore();
+        // 前沿只是同色的微弱折射，不使用白色竖条；并与填充裁切共用同一条缓慢变化的边界。
+        ctx.save(); consumedPath(ctx, w, h, p, t); ctx.strokeStyle = rgb(palette[0], .26); ctx.lineWidth = 1.05; ctx.shadowBlur = 8; ctx.shadowColor = rgb(palette[0], .34); ctx.stroke(); ctx.restore();
+        ctx.restore();
+        round(ctx, .75, .75, w - 1.5, h - 1.5, h / 2); ctx.strokeStyle = rgb(palette[0], .44); ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.font = `600 ${Math.round(h * .16)}px "Segoe UI Variable", "Microsoft YaHei UI"`; ctx.textBaseline = 'top';
+        ctx.fillStyle = 'rgba(236,245,255,.93)'; ctx.fillText('5 小时 · 已用', h * .24, h * .19);
+        ctx.fillStyle = 'rgba(204,219,243,.72)'; ctx.font = `500 ${Math.round(h * .13)}px "Segoe UI Variable", "Microsoft YaHei UI"`; ctx.fillText('Weekly 77% 剩余', h * .24, h * .67);
+        ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#f8fbff'; ctx.font = `750 ${Math.round(h * .40)}px "Segoe UI Variable", "Microsoft YaHei UI"`; ctx.fillText(`${Math.round((1 - p) * 100)}%`, w - h * .27, h * .48); ctx.textAlign = 'left';
+      }
+      function silk(ctx, w, h, p, t, c) {
+        base(ctx, w, h, p, t); const colors = palettes[c];
+        ctx.fillStyle = grad(ctx, 0, 0, w * p, h, [[0, rgb(colors[1], .58)], [.55, rgb(colors[0], .38)], [1, rgb(colors[0], .18)]]); ctx.fillRect(0, 0, w * p, h);
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < 8; i++) { const y = h * (.14 + i * .105); const phase = t * (.42 + i * .023) + i * 1.7; ctx.beginPath(); for (let x = -12; x <= w * p + 16; x += 9) { const wave = Math.sin(x * (.015 + i * .001) - phase) * (3.2 + i * .35) + Math.sin(x * .035 + phase * 1.7) * 1.4; if (x < 0) ctx.moveTo(x, y + wave); else ctx.lineTo(x, y + wave); } ctx.strokeStyle = rgb(i % 3 === 0 ? colors[2] : colors[0], .10 + i * .018); ctx.lineWidth = 1.1 + (i % 3) * .48; ctx.shadowBlur = 11; ctx.shadowColor = rgb(colors[0], .68); ctx.stroke(); }
+        ctx.shadowBlur = 0; finish(ctx, w, h, p, t, colors);
+      }
+      function mist(ctx, w, h, p, t, c) {
+        base(ctx, w, h, p, t); const colors = palettes[c]; const edge = w * p;
+        ctx.fillStyle = grad(ctx, 0, 0, edge, h, [[0, rgb(colors[1], .50)], [.60, rgb(colors[0], .34)], [1, rgb(colors[0], .15)]]); ctx.fillRect(0, 0, edge, h);
+        ctx.globalCompositeOperation = 'screen';
+        for (let i = 0; i < 3; i++) { const x = (.15 + i * .30 + Math.sin(t * (.055 + i * .012) + i) * .10) * edge; const y = h * (.30 + i * .21 + Math.cos(t * .046 + i) * .055); const r = h * (1.12 + i * .12); const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, rgb(colors[0], .16)); g.addColorStop(.54, rgb(colors[0], .045)); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); }
+        finish(ctx, w, h, p, t, colors);
+      }
+      function velvet(ctx, w, h, p, t, c) {
+        base(ctx, w, h, p, t); const colors = palettes[c]; const edge = w * p;
+        ctx.fillStyle = grad(ctx, 0, 0, edge, h, [[0, rgb(colors[1], .54)], [.64, rgb(colors[0], .30)], [1, rgb(colors[0], .13)]]); ctx.fillRect(0, 0, edge, h);
+        ctx.globalCompositeOperation = 'screen';
+        const x = ((Math.sin(t * .055) + 1.0) * .5) * (edge + 90) - 52; const sheen = grad(ctx, x - 72, 0, x + 72, h, [[0, 'rgba(255,255,255,0)'], [.48, rgb(colors[0], .16)], [1, 'rgba(255,255,255,0)']]); ctx.fillStyle = sheen; ctx.fillRect(x - 80, 0, 160, h);
+        ctx.fillStyle = grad(ctx, 0, 0, edge, 0, [[0, 'rgba(0,0,0,.10)'], [.5, 'rgba(255,255,255,.025)'], [1, 'rgba(0,0,0,.13)']]); ctx.fillRect(0, 0, edge, h); finish(ctx, w, h, p, t, colors);
+      }
+      function ember(ctx, w, h, p, t, c) {
+        base(ctx, w, h, p, t); const colors = palettes[c]; const edge = w * p;
+        ctx.fillStyle = grad(ctx, 0, 0, edge, h, [[0, rgb(colors[1], .53)], [.62, rgb(colors[0], .34)], [1, rgb(colors[0], .14)]]); ctx.fillRect(0, 0, edge, h);
+        ctx.globalCompositeOperation = 'screen';
+        for (let i = 0; i < 22; i++) { const x = ((i * 71.29 + t * (3.4 + (i % 5))) % 997) / 997 * edge; const y = 14 + ((i * 23.17 + Math.sin(t * .13 + i) * 9) % (h - 28)); const r = 1 + (i % 3) * .55; const g = ctx.createRadialGradient(x, y, 0, x, y, r * 5); g.addColorStop(0, rgb(colors[0], .22)); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(x - r * 5, y - r * 5, r * 10, r * 10); }
+        finish(ctx, w, h, p, t, colors);
+      }
+      function ripple(ctx, w, h, p, t, c) {
+        base(ctx, w, h, p, t); const colors = palettes[c]; const edge = w * p;
+        ctx.fillStyle = grad(ctx, 0, 0, edge, h, [[0, rgb(colors[1], .53)], [.58, rgb(colors[0], .33)], [1, rgb(colors[0], .14)]]); ctx.fillRect(0, 0, edge, h);
+        ctx.globalCompositeOperation = 'screen';
+        for (let i = 0; i < 4; i++) { ctx.beginPath(); for (let x = -10; x < edge + 10; x += 8) { const y = h * (.22 + i * .19) + Math.sin(x * .019 - t * (.30 + i * .037) + i * 2.1) * 2.2 + Math.sin(x * .047 + t * .16) * .8; if (x < 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.strokeStyle = rgb(colors[0], .075 + i * .018); ctx.lineWidth = 1.1; ctx.shadowBlur = 7; ctx.shadowColor = rgb(colors[0], .20); ctx.stroke(); }
+        ctx.shadowBlur = 0; finish(ctx, w, h, p, t, colors);
+      }
+      function halo(ctx, w, h, p, t, c) {
+        base(ctx, w, h, p, t); const colors = palettes[c]; const edge = w * p;
+        ctx.fillStyle = grad(ctx, 0, 0, edge, h, [[0, rgb(colors[1], .47)], [.68, rgb(colors[0], .28)], [1, rgb(colors[0], .12)]]); ctx.fillRect(0, 0, edge, h);
+        const pulse = .48 + .52 * Math.sin(t * .34); const g = ctx.createRadialGradient(edge * .26, h * .52, 0, edge * .26, h * .52, h * .82); g.addColorStop(0, rgb(colors[0], .08 + pulse * .06)); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, edge, h); finish(ctx, w, h, p, t, colors);
+      }
+      const painters = { silk, mist, velvet, ember, ripple, halo };
+      function draw(now) { const p = Number(progress.value) / 100; const seconds = now * .001; entries.forEach(entry => { const rect = resize(entry); painters[entry.style](entry.ctx, rect.width, rect.height, p, seconds, state.value); }); requestAnimationFrame(draw); }
+      progress.addEventListener('input', () => { progressOut.textContent = `${progress.value}%`; });
+      entries.forEach(entry => entry.card.querySelector('button').addEventListener('click', () => { activeStyle = entry.style; entries.forEach(item => item.card.classList.toggle('selected', item.style === activeStyle)); const label = entry.card.querySelector('.name').textContent; status.innerHTML = `<strong>已选择：${label}。</strong> 这只是视觉决策，尚未修改 Rust 常驻程序；我会以这个方案作为任务栏、详情卡片和自动弹窗的统一动效基础。`; }));
+      requestAnimationFrame(draw);
+    })();
+  </script>
+</body>
+</html>

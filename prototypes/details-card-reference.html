@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Taskbar · 详情卡片原型</title>
+  <style>
+    :root { color-scheme:dark; font-family:"Segoe UI Variable","Microsoft YaHei UI",sans-serif; background:#070d18; color:#f4f8ff; }
+    * { box-sizing:border-box; } body { min-height:100vh; margin:0; background:radial-gradient(900px 500px at 8% -8%,rgba(32,105,162,.43),transparent 65%),radial-gradient(620px 440px at 100% 6%,rgba(52,42,132,.26),transparent 66%),#070d18; }
+    main { position:relative; z-index:1; width:min(880px,calc(100vw - 44px)); margin:32px auto 64px; } h1,h2,h3,p { margin:0; } .eyebrow { color:#61e8ff; font-size:11px; font-weight:690; letter-spacing:.07em; text-transform:uppercase; } .lead { margin-top:10px; color:#a6b7d0; font-size:14px; line-height:1.65; }
+    .controls { display:flex; flex-wrap:wrap; align-items:end; justify-content:space-between; gap:14px; margin:25px 0 16px; } label { display:grid; gap:7px; color:#9cb1ce; font-size:12px; font-weight:570; } select,button { border:1px solid rgba(147,184,236,.26); border-radius:10px; color:#eaf4ff; background:rgba(10,21,40,.75); font:inherit; } select { min-width:282px; padding:10px 11px; } .control-note { color:#8297b4; font-size:12px; }
+    .detail-shell { overflow:hidden; border:1px solid rgba(139,181,231,.23); border-radius:27px; background:linear-gradient(145deg,rgba(18,33,57,.82),rgba(5,12,25,.90)); box-shadow:0 30px 68px rgba(0,0,0,.36),inset 0 1px rgba(255,255,255,.05); backdrop-filter:blur(24px) saturate(125%); -webkit-backdrop-filter:blur(24px) saturate(125%); }
+    .detail-header { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:19px 23px 16px; border-bottom:1px solid rgba(138,176,223,.18); } .detail-header h2 { margin-top:4px; font-size:24px; font-weight:650; letter-spacing:-.045em; } .detail-header p { margin-top:4px; color:#99afce; font-size:12px; } .head-actions { display:flex; gap:8px; } button { padding:8px 11px; cursor:pointer; font-size:11px; font-weight:620; } button.active { border-color:rgba(98,235,255,.70); background:rgba(76,213,255,.16); color:#dbfcff; } button.ghost { background:rgba(255,255,255,.06); }
+    .detail-body { display:grid; grid-template-columns:282px minmax(0,1fr); min-height:684px; } aside { padding:19px 17px 20px; border-right:1px solid rgba(138,176,223,.18); background:rgba(4,11,24,.26); } .side-title { margin-bottom:10px; color:#dde9fa; font-size:13px; font-weight:650; }
+    .quota-stack { display:grid; gap:8px; } .quota-card { position:relative; overflow:hidden; min-height:82px; padding:11px 12px; border:1px solid rgba(130,174,231,.23); border-radius:14px; background:rgba(9,19,36,.58); } .quota-card::before { position:absolute; content:""; inset:auto 0 0; height:4px; background:linear-gradient(90deg,#a063ff,#4ca9ff); } .quota-card.week::before { background:linear-gradient(90deg,#35d8ec,#4d82ff); } .quota-card.empty { border-color:rgba(255,173,78,.42); background:linear-gradient(135deg,rgba(73,47,10,.42),rgba(18,21,34,.48)); } .quota-card.empty::before { background:#ffbd55; } .quota-caption { color:#a9bedb; font-size:10px; } .quota-value { margin-top:4px; color:#f7fbff; font-size:20px; font-weight:670; letter-spacing:-.05em; } .quota-value b { font-size:11px; font-weight:570; } .quota-reset { margin-top:4px; color:#8da8cc; font-size:9.5px; } .mini-track { position:absolute; right:12px; bottom:14px; width:58px; height:5px; overflow:hidden; border-radius:999px; background:rgba(143,170,211,.18); } .mini-track i { display:block; width:var(--used); height:100%; border-radius:inherit; background:linear-gradient(90deg,#875eff,#b88eff); } .week .mini-track i { background:linear-gradient(90deg,#4ce7ff,#477cff); }
+    .side-section { margin-top:17px; } .identity { display:flex; align-items:center; gap:10px; margin-bottom:13px; padding:10px; border:1px solid rgba(130,174,231,.18); border-radius:13px; background:rgba(255,255,255,.32); } .avatar { display:grid; flex:0 0 auto; width:38px; height:38px; place-items:center; border-radius:50%; color:#0a718a; font-size:13px; font-weight:700; background:linear-gradient(135deg,#d8fcff,#b9d4ff); box-shadow:inset 0 1px rgba(255,255,255,.95),0 5px 12px rgba(41,112,151,.15); } .identity span { display:block; color:#829ab9; font-size:9px; } .identity strong { display:block; margin-top:3px; color:#e1ebfa; font-size:12px; font-weight:630; } .identity small { display:block; margin-top:2px; color:#839cb9; font-size:9px; } .account-grid { display:grid; gap:8px; } .account-grid div { display:grid; gap:2px; } .account-grid span { color:#829ab9; font-size:9.5px; } .account-grid strong { color:#e1ebfa; font-size:12px; font-weight:600; } .side-mini { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:13px; } .side-mini div { min-height:64px; padding:9px 10px; border:1px solid rgba(130,174,231,.18); border-radius:12px; background:rgba(18,31,54,.43); } .side-mini span { color:#8fa5c2; font-size:9.5px; } .side-mini strong { display:block; margin-top:6px; font-size:14px; font-weight:630; letter-spacing:-.035em; } .side-mini .voucher strong { color:#71eadf; } .reset-card { margin-top:8px; padding:9px 10px; border:1px solid rgba(83,222,212,.21); border-radius:12px; background:linear-gradient(125deg,rgba(20,78,88,.30),rgba(18,31,54,.38)); } .reset-card span { display:block; color:#8fa5c2; font-size:9.5px; } .reset-card strong { display:block; margin-top:3px; color:#87f1e6; font-size:11px; font-weight:610; } .reset-card small { display:block; margin-top:4px; color:#9bb3cb; font-size:9px; }
+    .content { padding:19px 21px 22px; } .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; } .summary-card { min-height:86px; padding:12px 13px; border:1px solid rgba(112,168,234,.24); border-radius:14px; background:rgba(10,23,44,.58); } .summary-card.primary { position:relative; grid-column:span 2; grid-row:span 2; overflow:hidden; min-height:181px; padding:15px 17px; background:linear-gradient(120deg,rgba(18,48,75,.82),rgba(12,25,52,.78)); } .summary-card.primary::after { position:absolute; right:-54px; top:-68px; width:166px; height:166px; border:1px solid rgba(75,235,255,.25); border-radius:50%; box-shadow:0 0 30px rgba(62,220,255,.16); content:""; } .primary-breakdown { position:absolute; z-index:1; right:17px; bottom:16px; left:17px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:11px; } .primary-breakdown div { min-width:0; } .primary-breakdown span { display:block; overflow:hidden; color:#668198; font-size:9px; text-overflow:ellipsis; white-space:nowrap; } .primary-breakdown strong { display:block; margin-top:4px; color:#1d3c54; font-size:16px; font-weight:650; letter-spacing:-.035em; } .primary-breakdown .cache strong { color:#087f9c; } .metric-label { position:relative; z-index:1; color:#a8bad2; font-size:10px; } .metric-value { position:relative; z-index:1; margin-top:7px; color:#59e9f5; font-size:32px; font-weight:650; letter-spacing:-.065em; } .summary-card:not(.primary) .metric-value { color:#edf5ff; font-size:18px; } .metric-foot { position:relative; z-index:1; margin-top:4px; color:#8ba6c8; font-size:9.5px; }
+    .section-head { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:25px 0 10px; } .section-head h3 { font-size:16px; font-weight:650; letter-spacing:-.03em; } .section-head h3::before { display:inline-block; width:3px; height:17px; margin-right:8px; border-radius:2px; background:#59e9f5; content:""; vertical-align:-3px; } .tabs { display:flex; gap:6px; } .tabs button { padding:6px 9px; font-size:10.5px; }
+    .chart-card { position:relative; min-height:235px; overflow:hidden; padding:15px 16px 13px; border:1px solid rgba(112,168,234,.24); border-radius:17px; background:rgba(9,19,36,.55); } .chart-top { display:flex; justify-content:space-between; color:#8fa7c4; font-size:11px; } .chart-top strong { color:#e5f0ff; font-size:12px; font-weight:610; } svg { display:block; width:100%; height:166px; margin-top:10px; overflow:visible; } .gridline { stroke:rgba(137,174,220,.16); stroke-width:1; } #area { fill:url(#areaFill); opacity:.76; } #line { fill:none; stroke:#55e6f5; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; filter:drop-shadow(0 0 6px rgba(65,234,255,.55)); } #cursor { display:none; stroke:rgba(243,251,255,.62); stroke-width:1; stroke-dasharray:3 4; } #point { display:none; fill:#fff; stroke:#51e5f7; stroke-width:3; } .tooltip { position:absolute; display:none; min-width:107px; padding:8px 9px; border:1px solid rgba(137,228,255,.38); border-radius:9px; background:rgba(7,17,34,.92); color:#f2f8ff; font-size:11px; line-height:1.5; pointer-events:none; } .chart-footer { display:flex; justify-content:space-between; color:#778fac; font-size:10px; }
+    .lower-grid { display:grid; grid-template-columns:1fr; gap:12px; margin-top:13px; } .data-card { min-height:112px; padding:13px 15px; border:1px solid rgba(112,168,234,.22); border-radius:16px; background:rgba(8,18,34,.50); } .data-card h3 { color:#dce9fa; font-size:13px; font-weight:640; } .data-card h3::before { display:inline-block; width:3px; height:15px; margin-right:7px; border-radius:2px; background:#578eff; content:""; vertical-align:-3px; } .usage-rows { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin-top:18px; } .usage-rows div { padding-right:8px; border-right:1px solid rgba(135,169,210,.17); } .usage-rows div:last-child { border:0; } .usage-rows span { color:#879fbd; font-size:10.5px; } .usage-rows strong { display:block; margin-top:7px; color:#edf5ff; font-size:20px; font-weight:640; letter-spacing:-.04em; } .usage-rows .cache strong { color:#75ecdf; } .account-total { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 18px; margin-top:13px; } .account-total div { display:flex; justify-content:space-between; gap:10px; border-bottom:1px solid rgba(135,169,210,.13); padding-bottom:7px; color:#9eb1cc; font-size:11px; } .account-total strong { color:#edf5ff; font-size:12px; font-weight:620; }
+    .detail-foot { margin-top:17px; color:#7890ae; font-size:10.5px; line-height:1.55; }
+
+    /* 与任务栏消耗弹窗统一：浅色毛玻璃、柔和折射与低频流光。 */
+    :root { color-scheme:light; background:#d9e6ef; color:#1e3044; }
+    body { position:relative; overflow-x:hidden; background:radial-gradient(820px 470px at 4% -14%,rgba(255,255,255,.96),transparent 68%),radial-gradient(660px 410px at 98% 8%,rgba(97,213,255,.23),transparent 69%),linear-gradient(145deg,#dcebf4,#b9d2e1); }
+    body::before { position:fixed; z-index:0; content:""; inset:-22vmax; pointer-events:none; background:radial-gradient(30vmax 18vmax at 24% 38%,rgba(255,255,255,.70),transparent 72%),radial-gradient(26vmax 20vmax at 74% 64%,rgba(66,203,236,.30),transparent 70%),linear-gradient(120deg,transparent 35%,rgba(255,255,255,.46) 50%,transparent 65%); filter:blur(5px); animation:page-glass-drift 9s ease-in-out infinite alternate; }
+    .eyebrow { color:#087f9c; } .lead,.control-note { color:#58728a; } label { color:#456176; } select,button { border-color:rgba(255,255,255,.82); color:#234057; background:rgba(255,255,255,.58); box-shadow:inset 0 1px rgba(255,255,255,.92),0 5px 14px rgba(42,87,121,.08); } button.active { border-color:rgba(34,174,205,.60); background:rgba(86,218,235,.28); color:#075c73; } button.ghost { background:rgba(255,255,255,.55); }
+    .detail-shell { position:relative; isolation:isolate; overflow:hidden; border-color:rgba(255,255,255,.78); background:linear-gradient(135deg,rgba(255,255,255,.80),rgba(225,242,251,.60)); box-shadow:inset 0 1px rgba(255,255,255,.95),inset 0 -1px rgba(73,128,171,.12); backdrop-filter:blur(27px) saturate(142%); -webkit-backdrop-filter:blur(27px) saturate(142%); }
+    .detail-shell::before { position:absolute; z-index:0; content:""; inset:-26px; pointer-events:none; background:radial-gradient(340px 180px at 17% 7%,rgba(255,255,255,.88),transparent 68%),radial-gradient(300px 220px at 88% 83%,rgba(56,214,241,.19),transparent 72%),linear-gradient(112deg,transparent 26%,rgba(255,255,255,.38) 48%,transparent 70%); animation:detail-glass-drift 12s ease-in-out infinite alternate; }
+    .detail-shell > * { position:relative; z-index:1; }
+    @keyframes detail-glass-drift { 0% { opacity:.46; transform:translate3d(-12px,-4px,0) scale(.99); } 52% { opacity:.74; transform:translate3d(13px,5px,0) scale(1.025); } 100% { opacity:.52; transform:translate3d(4px,-9px,0) scale(1.01); } }
+    @keyframes page-glass-drift { 0% { opacity:.46; transform:translate3d(-7vmax,-3vmax,0) rotate(-4deg) scale(.98); } 55% { opacity:.86; transform:translate3d(7vmax,4vmax,0) rotate(3deg) scale(1.06); } 100% { opacity:.54; transform:translate3d(2vmax,-6vmax,0) rotate(-2deg) scale(1.02); } }
+    .detail-header { border-bottom-color:rgba(65,118,156,.18); } .detail-header h2,.side-title,.section-head h3,.data-card h3 { color:#1c3449; } .detail-header p { color:#5d7890; }
+    .detail-body aside { border-right-color:rgba(65,118,156,.15); background:rgba(255,255,255,.18); }
+    .quota-card,.summary-card,.chart-card,.data-card,.side-mini div { border-color:rgba(255,255,255,.72); background:rgba(255,255,255,.43); box-shadow:inset 0 1px rgba(255,255,255,.75); }
+    .quota-card.empty { border-color:rgba(232,164,62,.48); background:linear-gradient(135deg,rgba(255,237,193,.75),rgba(255,255,255,.48)); } .quota-caption,.metric-label,.identity span,.account-grid span,.side-mini span,.reset-card span,.usage-rows span,.account-total div { color:#648097; }
+    .quota-value,.summary-card:not(.primary) .metric-value,.identity strong,.account-grid strong,.side-mini strong,.usage-rows strong,.account-total strong { color:#1c3449; } .identity small { color:#69839a; }
+    .quota-reset,.metric-foot,.detail-foot,.chart-top,.chart-footer { color:#668198; } .quota-card.primary,.summary-card.primary { background:linear-gradient(135deg,rgba(240,253,255,.80),rgba(194,231,246,.61)); } .summary-card.primary::after { border-color:rgba(13,174,204,.30); box-shadow:0 0 31px rgba(59,193,219,.22); }
+    .metric-value { color:#087f9c; } .side-mini .voucher strong,.usage-rows .cache strong,.reset-card strong { color:#087f9c; } .reset-card { border-color:rgba(90,202,208,.34); background:linear-gradient(125deg,rgba(226,253,250,.61),rgba(255,255,255,.44)); }
+    .chart-card { background:rgba(255,255,255,.38); } .gridline { stroke:rgba(62,120,155,.16); } #area { opacity:.50; } #line { stroke:#0b9abb; filter:drop-shadow(0 0 6px rgba(30,179,202,.34)); } #cursor { stroke:rgba(20,74,106,.55); } #point { fill:#fff; stroke:#0b9abb; } .tooltip { border-color:rgba(255,255,255,.88); background:rgba(245,252,255,.92); color:#1d3b50; box-shadow:0 8px 18px rgba(37,85,116,.18); }
+    @media (max-width:920px) { main { width:min(100% - 26px,760px); margin-top:28px; } .detail-body { grid-template-columns:238px minmax(0,1fr); } aside { border-right:1px solid rgba(65,118,156,.15); border-bottom:0; } .quota-stack { grid-template-columns:1fr; } .side-section { display:block; margin-top:14px; } .account-grid { grid-template-columns:1fr; } .side-mini,.reset-card { max-width:none; } .summary-grid { grid-template-columns:repeat(2,1fr); } .summary-card.primary { grid-column:span 2; grid-row:auto; min-height:145px; } }
+    @media (max-width:600px) { .detail-header,.content { padding-left:15px; padding-right:15px; } .detail-header { align-items:flex-start; flex-direction:column; } .head-actions { width:100%; } .head-actions button { flex:1; } .detail-header h2 { font-size:24px; } .quota-stack,.summary-grid,.lower-grid { grid-template-columns:1fr; } .summary-card.primary { grid-column:auto; } .quota-card { min-height:86px; } .content { padding-top:17px; } .usage-rows strong { font-size:17px; } select { min-width:min(100%,282px); } }
+  </style>
+  <style>
+    /* 生产详情卡：隐藏视觉稿的说明与情景选择器，保留同一份毛玻璃视觉语言。 */
+    html.details-embed{--details-render-scale:1;}
+    html.details-embed,html.details-embed body{width:100%;min-height:100%;height:100%;overflow:hidden;background:transparent;}
+    /* 详情窗口按实际 WebView CSS 视口响应布局。禁止用 CSS zoom 把整页硬塞进
+       副屏：那会在 150% DPI 下让字体变小、并掩盖右栏真实裁切问题。 */
+    html.details-embed main{width:100%;height:100%;margin:0;padding:0;}
+    html.details-embed main>.eyebrow,html.details-embed main>h1,html.details-embed main>.lead,html.details-embed main>.controls{display:none;}
+    /* WebView2 透明子窗口不能对 Explorer 背景做真正的 backdrop blur；用高不透明
+       度的白色毛玻璃层模拟折射，优先保证任务栏上方的小字号数据可读。 */
+    html.details-embed .detail-shell{height:100%;border-radius:26px;border:0;box-shadow:none;background:linear-gradient(135deg,rgba(255,255,255,.995),rgba(225,244,252,.975));}
+    /* 生产页绝不能让视觉稿里的演示数字抢先露出。只有 Rust 的受限快照已写入
+       DOM 后才显示整张卡片，避免打开详情时出现 42.8K、0.24 等假数据闪帧。 */
+    html.details-embed:not(.details-live) .detail-shell{visibility:hidden;}
+    html.details-embed.details-live .detail-shell{animation:details-enter .18s cubic-bezier(.2,.8,.2,1) both;}
+    @keyframes details-enter{from{opacity:0;transform:translateY(6px) scale(.994)}to{opacity:1;transform:none}}
+    @media (prefers-reduced-motion:reduce){body::before,.detail-shell::before,html.details-embed.details-live .detail-shell{animation:none!important}}
+    /* 详情右栏从红框标记的起点开始：左栏加宽，右侧整块收窄，而不是只压缩
+       右上四张指标卡。这样账户、余额与重置卡拥有稳定且可读的空间。 */
+    /* 左侧账户栏增加约 32px，右侧主体相应收窄约 5%；不是给整个窗口继续加宽。 */
+    html.details-embed .detail-header{min-height:64px;padding:12px 18px 10px;}
+    html.details-embed .detail-header h2{margin-top:2px;font-size:20px;letter-spacing:-.035em;}
+    html.details-embed .detail-header p{margin-top:2px;font-size:10px;}
+    html.details-embed .detail-body{min-height:0;height:calc(100% - 64px);grid-template-columns:250px minmax(0,1fr);}
+    html.details-embed aside{padding:10px 11px;overflow:hidden;}
+    html.details-embed .content{padding:10px 11px;overflow:hidden;}
+    /* 唯一允许的摘要结构：主方块 + 右侧四张短卡 2×2。嵌套网格让四张卡在
+       任意 CSS 视口内均分右栏，不能再被外层三列网格挤到画布外。 */
+    /* 左侧今日消耗维持主视觉，右侧仅承载四项次要指标，避免反向挤压主方块。 */
+    html.details-embed .summary-grid{display:grid;grid-template-columns:minmax(195px,55%) minmax(0,1fr) !important;grid-template-rows:164px;gap:8px;min-width:0;}
+    html.details-embed .secondary-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,1fr);gap:8px;min-width:0;}
+    html.details-embed .summary-card{min-width:0;min-height:0;padding:10px 11px;}
+    html.details-embed .summary-card.primary{grid-column:auto !important;grid-row:auto !important;min-height:0;padding:13px 13px;}
+    html.details-embed .primary-breakdown{right:12px;bottom:11px;left:12px;gap:5px;}
+    html.details-embed .primary-breakdown strong{font-size:15px;}
+    html.details-embed .primary-breakdown span{font-size:9px;}
+    html.details-embed .metric-label{font-size:10.5px;}
+    html.details-embed .metric-value{margin-top:6px;font-size:30px;}
+    html.details-embed .summary-card:not(.primary) .metric-value{font-size:15.5px;line-height:1.12;word-break:break-word;}
+    html.details-embed .secondary-summary-grid .metric-label{font-size:9px;}
+    html.details-embed .secondary-summary-grid .metric-foot{font-size:8.5px;}
+    html.details-embed .section-head{margin:7px 0 4px;}
+    html.details-embed .section-head h3{font-size:14px;}
+    /* 生产详情卡给曲线足够纵向振幅，避免把峰谷强行压扁。 */
+    html.details-embed .chart-card{width:100%;min-width:0;min-height:174px;padding:9px 9px 8px;}
+    html.details-embed svg{height:122px;margin-top:4px;}
+    html.details-embed .chart-top,html.details-embed .chart-footer{font-size:8px;}
+    html.details-embed .lower-grid{display:grid;margin-top:7px;}
+    html.details-embed .data-card{min-height:68px;padding:8px 9px;}
+    html.details-embed .data-card h3{font-size:11px;}
+    html.details-embed .account-total{margin-top:7px;gap:5px 12px;}
+    html.details-embed .account-total div{padding-bottom:3px;font-size:9px;}
+    html.details-embed .account-total strong{font-size:10px;}
+    html.details-embed .detail-foot{display:none;}
+    /* 三个切换项均只消费 Rust 下发的真实序列；空序列显示可解释空态，
+       绝不会回退到视觉稿的演示数组。 */
+    html.details-embed .tabs{display:flex;gap:5px;}
+    html.details-embed .tabs button{padding:5px 9px;font-size:8.5px;}
+    /* 剩余进度放到“xx% 剩余”右侧的专属留白，而非重置时间所在行。
+       这样余额卡左栏在窄宽度下也不会出现轨道与时间文字重叠。 */
+    html.details-embed .quota-card{min-height:73px;padding:8px 10px;}
+    html.details-embed .quota-reset{padding-right:0;font-size:8.8px;white-space:nowrap;}
+    html.details-embed .quota-card .mini-track{top:46px;right:10px;bottom:auto;left:auto;width:59px;}
+    /* 账户区是辅助信息：收紧它而不是压缩余额、重置卡或今日主指标。 */
+    html.details-embed .side-section{margin-top:7px;}
+    html.details-embed .side-title{margin-bottom:6px;font-size:12px;}
+    html.details-embed .account-grid{gap:3px;}
+    html.details-embed .account-grid span{font-size:8.2px;line-height:1.1;}
+    html.details-embed .account-grid strong{font-size:10px;line-height:1.15;}
+    html.details-embed .side-mini{margin-top:6px;}
+    html.details-embed .side-mini div{min-height:42px;padding:6px 8px;}
+    html.details-embed .side-mini span{font-size:8.5px;}
+    html.details-embed .side-mini strong{margin-top:4px;font-size:12px;}
+    html.details-embed .reset-card{margin-top:6px;padding:7px 8px;}
+    html.details-embed .reset-card small{white-space:pre-line;line-height:1.35;}
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Detail card / official login</p>
+    <h1>详情卡片 · 官方账户</h1>
+    <p class="lead">仅用于视觉与交互原型。这里的数值是模拟数据；正式版本会由 Rust 后端提供经验证的官方登录额度、Token 账本和重置时间。</p>
+    <div class="controls">
+      <label>官方数据情形
+        <select id="scenario">
+          <option value="normal">双额度可用 · 有今日 Token</option>
+          <option value="credits">5 小时用尽 · 使用余额</option>
+          <option value="weekly">仅 7 天额度 · 有余额</option>
+          <option value="empty">官方未提供今日 Token</option>
+        </select>
+      </label>
+      <span class="control-note">曲线可移动鼠标查看小时数据；不显示当前任务 Token。</span>
+    </div>
+    <section class="detail-shell" aria-label="Codex 官方账户详情卡片">
+      <header class="detail-header">
+        <div><p class="eyebrow">Codex Taskbar</p><h2>官方账户</h2><p id="sourceText">官方数据已更新 · 14 秒前</p></div>
+        <div class="head-actions"><button class="ghost" id="refreshButton" type="button">↻ 刷新</button><button class="ghost" id="settingsButton" type="button">⚙ 设置</button></div>
+      </header>
+      <div class="detail-body">
+        <aside>
+          <h3 class="side-title">额度与重置</h3>
+          <div class="quota-stack">
+            <article class="quota-card" id="fiveCard"><p class="quota-caption">5 小时</p><p class="quota-value" id="fiveValue"></p><p class="quota-reset" id="fiveReset"></p><span class="mini-track"><i id="fiveTrack"></i></span></article>
+            <article class="quota-card week" id="weekCard"><p class="quota-caption">7 天</p><p class="quota-value" id="weekValue"></p><p class="quota-reset" id="weekReset"></p><span class="mini-track"><i id="weekTrack"></i></span></article>
+          </div>
+          <div class="reset-card"><span>重置卡</span><small id="voucherExpiry">--</small></div>
+          <section class="side-section"><h3 class="side-title">账户信息</h3><div class="account-grid" id="accountGrid"><div><span>账户</span><strong>ak***@gmail.com</strong></div><div><span>订阅 / 认证</span><strong>Plus · ChatGPT OAuth</strong></div><div><span>数据源</span><strong>Codex 官方登录</strong></div><div><span>账户状态</span><strong>已验证</strong></div></div><div class="side-mini"><div><span>剩余余额</span><strong id="balance">12.50</strong></div><div class="voucher"><span>今日余额消耗</span><strong id="balanceSpend">--</strong></div></div></section>
+        </aside>
+        <section class="content">
+          <div class="summary-grid">
+            <article class="summary-card primary"><p class="metric-label">今日消耗</p><p class="metric-value" id="todayTotal">42.8K</p><p class="metric-foot" id="todaySub">Token 合计 · 本机账本</p><div class="primary-breakdown" aria-label="今日 Token 明细"><div><span>输入</span><strong id="input">12.4K</strong></div><div class="cache"><span>缓存输入</span><strong id="cached">8.2K</strong></div><div><span>输出</span><strong id="output">22.2K</strong></div></div></article>
+            <div class="secondary-summary-grid" aria-label="今日摘要指标">
+              <article class="summary-card"><p class="metric-label">缓存命中</p><p class="metric-value" id="cacheHit">74%</p><p class="metric-foot">仅已确认 Token</p></article>
+              <article class="summary-card"><p class="metric-label">估算金额</p><p class="metric-value" id="estimate">$0.24</p><p class="metric-foot">非订阅账单</p></article>
+              <article class="summary-card"><p class="metric-label">今日余额消耗</p><p class="metric-value" id="balanceSpendSummary">0.24</p><p class="metric-foot">官方原始单位</p></article>
+              <article class="summary-card"><p class="metric-label">本机历史消耗</p><p class="metric-value" id="historyTotal">2.31B</p><p class="metric-foot">仅此设备记录</p></article>
+            </div>
+          </div>
+          <div class="section-head"><h3 id="chartTitle">今日消耗趋势</h3><div class="tabs"><button class="active" type="button" data-mode="today">今日</button><button type="button" data-mode="history">本机历史</button><button type="button" data-mode="cost">金额</button></div></div>
+          <section class="chart-card" id="chartCard"><div class="chart-top"><span id="chartUnit">Token / 小时 · 本机记录</span><strong id="chartPeak">峰值 8.4K</strong></div><svg id="chart" viewBox="0 0 760 166" preserveAspectRatio="none" aria-label="消耗趋势曲线"><defs><linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#55e6f5" stop-opacity=".38"/><stop offset="1" stop-color="#55e6f5" stop-opacity="0"/></linearGradient></defs><path class="gridline" d="M0 18H760M0 72H760M0 126H760"/><path id="area"/><path id="line"/><line id="cursor" y1="0" y2="145"/><circle id="point" r="5"/></svg><div class="tooltip" id="tooltip"></div><div class="chart-footer" id="chartFooter"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>现在</span></div></section>
+          <div class="lower-grid">
+            <section class="data-card"><h3>账户与本机记录</h3><div class="account-total"><div><span>订阅额度状态</span><strong id="quotaState">双额度可用</strong></div><div><span>官方余额原始单位</span><strong id="balanceState">12.50</strong></div><div><span>本机记录起点</span><strong>2026-08-01</strong></div><div><span>历史范围</span><strong>仅此设备</strong></div></div></section>
+          </div>
+          <p class="detail-foot" id="detailFoot">说明：缓存、今日 Token 与估算金额只使用可验证的本地/官方字段；缺失数据显示“--”，不使用当前任务或历史总量替代。</p>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      // 此段仅服务独立设计稿。嵌入产品后所有数据都必须来自 Rust 快照；否则
+      // 默认示例、曲线切换和 hover 都会在真实卡片里制造假数据。
+      if(document.documentElement.classList.contains('details-embed')) return;
+      const data = {
+        normal:{five:43,week:68,balance:'12.50',balanceSpend:'0.24',today:'42.8K',cache:'74%',estimate:'$0.24',history:'2.31B',input:'12.4K',cached:'8.2K',output:'22.2K',state:'双额度可用',fiveReset:'重置：2026-08-29 20:40',weekReset:'重置：2026-09-04 09:17',voucherExpiry:'精确到期：2026-09-21 07:07',token:[1.1,1.8,1.2,2.7,3.3,2.1,4.8,6.2,5.4,8.4,6.7,4.2],historyToken:[18,21,17,26,33,29,41,38,52,46,57,49,61,43],cost:[.01,.02,.01,.03,.04,.02,.05,.07,.06,.09,.07,.05]},
+        credits:{five:0,week:42,balance:'12.50',balanceSpend:'0.47',today:'81.6K',cache:'69%',estimate:'$0.47',history:'2.31B',input:'26.1K',cached:'12.9K',output:'42.6K',state:'5 小时用尽 · 使用余额',fiveReset:'重置：2026-08-29 20:40',weekReset:'重置：2026-09-04 09:17',voucherExpiry:'精确到期：2026-09-21 07:07',token:[2.7,2.1,5.2,3.8,6.9,7.3,9.2,7.8,10.5,12.4,9.8,8.1],historyToken:[18,21,17,26,33,29,41,38,52,46,57,49,61,82],cost:[.03,.02,.06,.04,.08,.09,.12,.09,.13,.15,.12,.10]},
+        weekly:{five:null,week:34,balance:'12.50',balanceSpend:'0.09',today:'17.3K',cache:'82%',estimate:'$0.09',history:'2.31B',input:'4.8K',cached:'3.9K',output:'8.6K',state:'仅 7 天额度',fiveReset:'官方未提供 5 小时重置',weekReset:'重置：2026-09-02 09:17',voucherExpiry:'精确到期：2026-09-21 07:07',token:[.4,.8,1.1,.6,1.9,2.4,1.5,3.1,2.8,4.5,3.4,2.7],historyToken:[18,21,17,26,33,29,41,38,52,46,57,49,61,17],cost:[.00,.01,.01,.01,.02,.03,.02,.04,.03,.05,.04,.03]},
+        empty:{five:43,week:68,balance:'12.50',balanceSpend:'--',today:'--',cache:'--',estimate:'--',history:'2.31B',input:'--',cached:'--',output:'--',state:'额度可用 · 今日数据缺失',fiveReset:'重置：2026-08-29 20:40',weekReset:'重置：2026-09-04 09:17',voucherExpiry:'精确到期：2026-09-21 07:07',token:[0,0,0,0,0,0,0,0,0,0,0,0],historyToken:[18,21,17,26,33,29,41,38,52,46,57,49,61,43],cost:[0,0,0,0,0,0,0,0,0,0,0,0]}
+      };
+      const $ = id => document.getElementById(id); let current=data.normal, mode='today';
+      const number = value => value === '--' ? '--' : value;
+      function quota(card,value,reset,track) { if(value===null){card.style.display='none';return;} card.style.display='block';card.classList.toggle('empty',value===0); $(track).style.setProperty('--used',`${100-value}%`); $(track).style.width=`${100-value}%`; }
+      function setQuota(cardId,valueId,resetId,trackId,value,reset){ const card=$(cardId); if(value===null){card.style.display='none';return;} card.style.display='block';card.classList.toggle('empty',value===0); $(valueId).innerHTML=`${value}% <b>剩余</b>`;$(resetId).textContent=reset;$(trackId).style.width=`${100-value}%`; }
+      function apply() { setQuota('fiveCard','fiveValue','fiveReset','fiveTrack',current.five,current.fiveReset);setQuota('weekCard','weekValue','weekReset','weekTrack',current.week,current.weekReset); $('balance').textContent=current.balance;$('balanceSpend').textContent=number(current.balanceSpend);$('balanceSpendSummary').textContent=number(current.balanceSpend);$('voucherExpiry').textContent=current.voucherExpiry;$('todayTotal').textContent=number(current.today);$('cacheHit').textContent=number(current.cache);$('estimate').textContent=number(current.estimate);$('historyTotal').textContent=current.history;$('input').textContent=number(current.input);$('cached').textContent=number(current.cached);$('output').textContent=number(current.output);$('quotaState').textContent=current.state;$('balanceState').textContent=current.balance;$('todaySub').textContent=current.today==='--'?'官方未提供今日 Token':'Token 合计 · 本机账本';$('sourceText').textContent=current.today==='--'?'官方额度已更新 · 今日 Token 未提供':'官方数据已更新 · 14 秒前'; renderChart(); }
+      function path(values){const w=760,h=145,max=Math.max(...values,1),dx=w/(values.length-1);const points=values.map((v,i)=>[i*dx,h-(v/max)*(h-18)-8]);let d=`M${points[0][0]},${points[0][1]}`;for(let i=1;i<points.length;i++){const prev=points[i-1],p=points[i],mid=(prev[0]+p[0])/2;d+=` C${mid},${prev[1]} ${mid},${p[1]} ${p[0]},${p[1]}`;}return {d,points};}
+      function chartValues(){ return mode==='history' ? current.historyToken : mode==='cost' ? current.cost : current.token; }
+      function renderChart(){const values=chartValues(),draw=path(values),area=`${draw.d} L760,145 L0,145 Z`;$('line').setAttribute('d',draw.d);$('area').setAttribute('d',area);const labels={today:'今日消耗趋势',history:'本机历史消耗趋势',cost:'今日估算金额趋势'};$('chartTitle').textContent=labels[mode];$('chartUnit').textContent=mode==='history'?'本机记录 Token / 日':mode==='cost'?'估算金额 / 小时':'Token / 小时 · 本机记录';const peak=Math.max(...values);$('chartPeak').textContent=mode==='cost'?`峰值 $${peak.toFixed(2)}`:`峰值 ${peak.toFixed(1)}K`;$('chartFooter').innerHTML=mode==='history'?'<span>14 天前</span><span>10 天前</span><span>6 天前</span><span>2 天前</span><span>今天</span>':'<span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>现在</span>';$('chart').dataset.points=JSON.stringify(draw.points);}
+      $('scenario').addEventListener('change',event=>{current=data[event.target.value];apply();});
+      document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>{mode=button.dataset.mode;document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active',b===button));apply();}));
+      $('chartCard').addEventListener('mousemove',event=>{const rect=$('chart').getBoundingClientRect(),x=Math.max(0,Math.min(rect.width,event.clientX-rect.left)),values=chartValues(),index=Math.round((x/rect.width)*(values.length-1)),points=JSON.parse($('chart').dataset.points),point=points[index],svgX=point[0],svgY=point[1];$('cursor').style.display='block';$('point').style.display='block';$('cursor').setAttribute('x1',svgX);$('cursor').setAttribute('x2',svgX);$('point').setAttribute('cx',svgX);$('point').setAttribute('cy',svgY);const value=mode==='cost'?`$${values[index].toFixed(2)}`:`${values[index].toFixed(1)}K Token`;const label=mode==='history'?`${14-index} 天前`:mode==='today'||mode==='cost'?`${String(index*2).padStart(2,'0')}:00`:'';const tip=$('tooltip');tip.style.display='block';tip.textContent=`${label} · ${value}`;tip.style.left=`${Math.min(event.offsetX+13,rect.width-112)}px`;tip.style.top=`${Math.max(37,event.offsetY-20)}px`;});
+      $('chartCard').addEventListener('mouseleave',()=>{$('cursor').style.display='none';$('point').style.display='none';$('tooltip').style.display='none';});apply();
+    })();
+  </script>
+  <script>
+    /* 生产数据桥：只接收 Rust 已格式化的 `schema_version=1, kind=details` 快照。
+       绝不把服务端原始 JSON 或本机 SQLite 行渲染到 WebView2。 */
+    (() => {
+      if(!document.documentElement.classList.contains('details-embed')) return;
+      const byId=id=>document.getElementById(id), text=(id,value)=>{const node=byId(id);if(node)node.textContent=value??'--';};
+      const rowMap=rows=>new Map((Array.isArray(rows)?rows:[]).map(row=>[row.label,row.value]));
+      const percent=value=>{const match=String(value??'').match(/(\d+(?:\.\d+)?)%/);return match?Math.max(0,Math.min(100,Math.round(Number(match[1])))):null;};
+      const applyQuota=(prefix,card)=>{if(!card){byId(`${prefix}Card`).style.display='none';return;}const value=percent(card.value);const el=byId(`${prefix}Card`);el.style.display='block';el.classList.toggle('empty',value===0);text(`${prefix}Value`,value===null?'--':`${value}% 剩余`);text(`${prefix}Reset`,card.detail);byId(`${prefix}Track`).style.width=`${Math.max(0,100-(value??0))}%`;};
+      let seriesById=new Map(),activeMode='today',activeSeries=null,activePoints=[],drawnPoints=[];
+      const hideHover=()=>{byId('cursor').style.display='none';byId('point').style.display='none';byId('tooltip').style.display='none';};
+      const compact=value=>value>=1e9?`${(value/1e9).toFixed(2)}B`:value>=1e6?`${(value/1e6).toFixed(1)}M`:value>=1e3?`${(value/1e3).toFixed(1)}K`:Math.round(value).toLocaleString();
+      const usd=microUsd=>{const value=(Number(microUsd)||0)/1e6;return value>=1?`$${value.toFixed(4)}`:`$${value.toFixed(6)}`;};
+      const chartValue=(series,value)=>series?.id==='cost'?usd(value):`${compact(value)} Token`;
+      const updateChart=series=>{hideHover();activeSeries=series??null;const points=Array.isArray(series?.points)?series.points:[];activePoints=points;drawnPoints=[];text('chartTitle',series?.title||'消耗趋势');text('chartUnit',series?.unit||'--');const footer=byId('chartFooter'),values=points.map(point=>Math.max(0,Number(point.value)||0));if(!points.length||!values.some(value=>value>0)){byId('line').setAttribute('d','');byId('area').setAttribute('d','');text('chartPeak',series?.empty_message||'暂无可靠数据');if(footer)footer.replaceChildren();return;}const max=Math.max(...values,1),w=760,h=145,dx=points.length>1?w/(points.length-1):0;drawnPoints=points.map((point,index)=>[index*dx,h-(values[index]/max)*(h-18)-8]);let path=`M${drawnPoints[0][0]},${drawnPoints[0][1]}`;for(let index=1;index<drawnPoints.length;index++){const previous=drawnPoints[index-1],current=drawnPoints[index],middle=(previous[0]+current[0])/2;path+=` C${middle},${previous[1]} ${middle},${current[1]} ${current[0]},${current[1]}`;}byId('line').setAttribute('d',path);byId('area').setAttribute('d',`${path} L760,145 L0,145 Z`);text('chartPeak',`峰值 ${chartValue(series,max)}`);if(footer){footer.replaceChildren();const indexes=[0,Math.floor((points.length-1)/4),Math.floor((points.length-1)/2),Math.floor((points.length-1)*3/4),points.length-1].filter((value,index,array)=>array.indexOf(value)===index);for(const index of indexes){const span=document.createElement('span');span.textContent=points[index].label;footer.append(span);}}};
+      const selectMode=mode=>{activeMode=seriesById.has(mode)?mode:(seriesById.keys().next().value||'today');document.querySelectorAll('[data-mode]').forEach(button=>button.classList.toggle('active',button.dataset.mode===activeMode));updateChart(seriesById.get(activeMode));};
+      document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>selectMode(button.dataset.mode)));
+      byId('chartCard')?.addEventListener('mousemove',event=>{if(!activePoints.length||!drawnPoints.length)return;const svg=byId('chart'),rect=svg.getBoundingClientRect();if(event.clientY<rect.top||event.clientY>rect.bottom)return hideHover();const x=Math.max(0,Math.min(rect.width,event.clientX-rect.left)),index=Math.round((x/Math.max(rect.width,1))*(activePoints.length-1)),drawn=drawnPoints[index],point=activePoints[index];byId('cursor').style.display='block';byId('point').style.display='block';byId('cursor').setAttribute('x1',drawn[0]);byId('cursor').setAttribute('x2',drawn[0]);byId('point').setAttribute('cx',drawn[0]);byId('point').setAttribute('cy',drawn[1]);const tip=byId('tooltip');tip.style.display='block';tip.textContent=`${point.label} · ${chartValue(activeSeries,Number(point.value)||0)}`;const cardRect=byId('chartCard').getBoundingClientRect();tip.style.left=`${Math.min(event.clientX-cardRect.left+12,cardRect.width-126)}px`;tip.style.top=`${Math.max(30,event.clientY-cardRect.top-34)}px`;});
+      byId('chartCard')?.addEventListener('mouseleave',hideHover);
+      const apply=snapshot=>{if(snapshot?.schema_version!==1||snapshot?.kind!=='details')return;const metrics=Array.isArray(snapshot.metric_cards)?snapshot.metric_cards:[],five=metrics.find(card=>card.label==='5 小时'),week=metrics.find(card=>card.label==='Weekly');applyQuota('five',five);applyQuota('week',week);const primary=rowMap(snapshot.primary_rows),secondary=rowMap(snapshot.secondary_rows);text('sourceText',`${snapshot.status??'等待官方数据'} · ${snapshot.updated??'--'}`);text('todayTotal',snapshot.hero?.value);text('todaySub',snapshot.hero?.hint);text('input',secondary.get('今日输入')??secondary.get('最近输入')??secondary.get('本次输入')??'--');text('cached',secondary.get('今日缓存')??secondary.get('最近缓存输入')??secondary.get('本次缓存输入')??'--');text('output',secondary.get('今日输出')??secondary.get('最近输出')??secondary.get('本次输出')??'--');text('cacheHit',secondary.get('缓存命中')??secondary.get('最近缓存命中')??'--');text('estimate',snapshot.estimate??secondary.get('本轮预估')??'--');text('balanceSpend','--');text('balanceSpendSummary','--');text('historyTotal',secondary.get('本机历史消耗')??primary.get('本机历史消耗')??'--');text('balance',primary.get('余额')??'--');text('balanceState',primary.get('余额')??'--');text('voucherExpiry',primary.get('重置券')??'--');text('quotaState',five?.value&&week?.value?'双额度可用':week?.value?'仅 7 天额度':'等待额度');text('detailFoot',snapshot.footer);const grid=byId('accountGrid');if(grid){grid.replaceChildren();for(const row of (snapshot.primary_rows||[]).filter(row=>row.label!=='余额'&&row.label!=='重置券'&&row.label!=='本机历史消耗')){const item=document.createElement('div'),label=document.createElement('span'),value=document.createElement('strong');label.textContent=row.label;value.textContent=row.value;item.append(label,value);grid.append(item);}}const incoming=Array.isArray(snapshot.trend_series)?snapshot.trend_series:[];seriesById=new Map(incoming.map(series=>[series.id,series]));if(!seriesById.size)seriesById.set('history',{id:'history',title:snapshot.trend_title,unit:'仅此设备聚合记录',empty_message:'暂无可靠数据',points:snapshot.trend_points||[]});selectMode(activeMode);document.documentElement.classList.add('details-live');};
+      window.addEventListener('message',event=>apply(event.data));window.chrome?.webview?.addEventListener('message',event=>apply(event.data));
+      // DOM 与 WebMessage 监听器都已完成安装后再请求当前快照，消除首帧导航
+      // 期间原生端早投递消息而留在演示数据上的竞态。
+      window.chrome?.webview?.postMessage({action:'details-ready'});
+      byId('refreshButton')?.addEventListener('click',()=>window.chrome?.webview?.postMessage({action:'refresh-details'}));
+      byId('settingsButton')?.addEventListener('click',()=>window.chrome?.webview?.postMessage({action:'open-settings'}));
+      // 只在内嵌 WebView2 的 debug 路径发送尺寸，帮助排查副屏 DPI 视口；数据
+      // 仅包含像素数，原生端也只在 debug 构建记录，不能携带账户或用量信息。
+      const reportLayout=()=>{const shell=document.querySelector('.detail-shell'),grid=document.querySelector('.summary-grid'),primary=document.querySelector('.summary-card.primary'),secondary=document.querySelector('.secondary-summary-grid');window.chrome?.webview?.postMessage({action:'details-layout-diagnostics',viewport_width:Math.round(window.innerWidth),viewport_height:Math.round(window.innerHeight),shell_width:Math.round(shell?.getBoundingClientRect().width||0),grid_width:Math.round(grid?.getBoundingClientRect().width||0),primary_width:Math.round(primary?.getBoundingClientRect().width||0),secondary_width:Math.round(secondary?.getBoundingClientRect().width||0)});};
+      window.setTimeout(reportLayout,350);
+    })();
+  </script>
+</body>
+</html>

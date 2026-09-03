@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Taskbar · 进度条参考实验室</title>
+  <style>
+    :root { color-scheme: dark; --accent: #51d9ff; --deep: #1550bf; --glow: #65e8ff; font-family: "Segoe UI Variable", "Microsoft YaHei UI", sans-serif; background: #080d18; color: #f5f8ff; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; background: radial-gradient(850px 470px at 16% 0, #152d58 0%, transparent 63%), #080d18; }
+    main { width: min(900px, calc(100vw - 40px)); margin: 54px auto 84px; }
+    h1 { margin: 0; font-size: clamp(29px, 5vw, 46px); letter-spacing: -.06em; }
+    .intro { max-width: 720px; margin: 12px 0 26px; color: #afbad0; line-height: 1.7; }
+    .rule { margin: 0 0 24px; padding: 14px 16px; border: 1px solid rgba(117, 153, 213, .19); border-left: 3px solid #55e4ff; border-radius: 13px; background: rgba(13, 22, 40, .66); color: #c7d3e7; font-size: 14px; line-height: 1.65; }
+    .controls { display: flex; flex-wrap: wrap; gap: 13px 26px; align-items: center; margin: 0 0 25px; padding: 15px 17px; border-radius: 18px; background: rgba(14, 23, 42, .72); border: 1px solid rgba(117, 153, 213, .18); }
+    label { display: inline-flex; align-items: center; gap: 10px; color: #bcc9df; font-size: 14px; }
+    input[type="range"] { width: 190px; accent-color: #56dcff; }
+    select { border: 1px solid rgba(114, 155, 221, .36); border-radius: 10px; padding: 7px 10px; color: #e7efff; background: #111d33; font: inherit; }
+    output { min-width: 44px; color: #61e3ff; font-weight: 720; font-variant-numeric: tabular-nums; }
+    .cards { display: grid; gap: 18px; }
+    article { padding: 21px; border: 1px solid rgba(128, 152, 195, .19); border-radius: 22px; background: linear-gradient(145deg, rgba(20, 30, 52, .88), rgba(10, 16, 28, .88)); box-shadow: 0 16px 42px rgba(0,0,0,.20); }
+    .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 15px; }
+    .head strong { font-size: 18px; letter-spacing: -.025em; }
+    .head span { color: #8fa3c7; font-size: 12px; }
+    .bar { position: relative; height: 108px; overflow: hidden; isolation: isolate; border: 1px solid rgba(119, 157, 222, .47); border-radius: 999px; background: rgba(25, 34, 54, .70); box-shadow: inset 0 1px 0 rgba(255,255,255,.035), 0 10px 24px rgba(0,0,0,.16); }
+    .bar::before { content:""; position:absolute; inset: 0; z-index: -1; background: linear-gradient(110deg, rgba(38,52,80,.78), rgba(21,31,50,.70)); }
+    .fill { position: absolute; inset: 0 auto 0 0; width: var(--used, 54%); overflow: hidden; border-radius: 999px; transition: width 680ms cubic-bezier(.22,.9,.26,1); }
+    .fill::after { content:""; position:absolute; top:-34%; bottom:-34%; width: 28%; min-width: 96px; left:-42%; transform: skewX(-16deg); background: linear-gradient(90deg, transparent, rgba(119, 236, 255, .02) 20%, rgba(128, 231, 255, .18) 50%, rgba(93, 215, 255, .02) 80%, transparent); filter: blur(7px); animation: pass 14s cubic-bezier(.45,.05,.55,.95) infinite; }
+    @keyframes pass { 0%, 14% { translate: 0 0; opacity: 0; } 22% { opacity: 1; } 77% { opacity: .8; } 90%, 100% { translate: 560% 0; opacity: 0; } }
+    .style-path .fill { background: linear-gradient(100deg, color-mix(in srgb, var(--deep) 91%, #020815), color-mix(in srgb, var(--accent) 45%, #123d89)); }
+    .style-path .fill::before { content:""; position:absolute; inset:0; opacity:.42; background: repeating-linear-gradient(0deg, transparent 0 20px, rgba(149,236,255,.10) 21px, transparent 23px), radial-gradient(110% 92% at 0 50%, rgba(119,231,255,.22), transparent 63%); background-size: auto, 100% 100%; animation: tide 18s ease-in-out infinite alternate; }
+    @keyframes tide { from { background-position: 0 0, 0 0; } to { background-position: 0 8px, 22px 0; } }
+    .style-mesh .fill { background: radial-gradient(68% 120% at 14% 50%, color-mix(in srgb, var(--accent) 48%, transparent), transparent 68%), radial-gradient(62% 98% at 62% 42%, color-mix(in srgb, var(--deep) 75%, transparent), transparent 72%), linear-gradient(100deg, #102b78, #164c9a); background-size: 140% 150%, 130% 145%, 100%; animation: mesh 20s ease-in-out infinite alternate; }
+    .style-mesh .fill::after { animation-duration: 18s; opacity: .72; }
+    @keyframes mesh { from { background-position: 4% 50%, 86% 48%, 0 0; } to { background-position: 20% 45%, 63% 57%, 0 0; } }
+    .style-sheen .fill { background: linear-gradient(100deg, color-mix(in srgb, var(--deep) 92%, #050914), color-mix(in srgb, var(--accent) 36%, #143e90)); }
+    .style-sheen .fill::before { content:""; position:absolute; inset:0; opacity:.42; background: linear-gradient(102deg, transparent 6%, rgba(121,228,255,.08) 36%, transparent 53%), radial-gradient(100% 140% at 14% 80%, rgba(90,225,255,.15), transparent 55%); background-size: 220% 100%, 100% 100%; animation: sheen 16s ease-in-out infinite; }
+    @keyframes sheen { 0%, 14% { background-position: 105% 0, 0 0; } 68%, 100% { background-position: -115% 0, 0 0; } }
+    .bar .label { position:absolute; z-index:3; left:26px; top:22px; color:#edf8ff; font-size:15px; font-weight:720; letter-spacing:-.02em; text-shadow: 0 1px 8px rgba(0,0,0,.22); }
+    .bar .detail { position:absolute; z-index:3; left:26px; bottom:19px; color:rgba(216,230,250,.76); font-size:12px; }
+    .bar .value { position:absolute; z-index:3; right:28px; top:50%; translate:0 -52%; color:#f8fbff; font-size:42px; line-height:1; font-weight:760; letter-spacing:-.065em; font-variant-numeric:tabular-nums; }
+    .note { margin: 13px 0 16px; color: #acb9d0; font-size: 13px; line-height: 1.65; }
+    button { border: 1px solid rgba(113,155,220,.38); border-radius: 10px; padding: 8px 12px; background:#13223c; color:#dbe8ff; font: inherit; font-size:13px; cursor:pointer; }
+    button:hover { border-color:#56e4ff; background:#19335d; }
+    article.selected { border-color: rgba(85,228,255,.84); box-shadow: 0 0 0 1px rgba(85,228,255,.12), 0 16px 42px rgba(0,0,0,.20); }
+    #choice { margin-top:20px; padding:14px 17px; border-left:3px solid #55e4ff; border-radius:11px; background:rgba(14,24,43,.75); color:#bdc9df; line-height:1.6; font-size:14px; }
+    #choice strong { color:#fff; }
+    @media (max-width: 600px) { main { width: min(100% - 28px, 620px); margin-top: 26px; } article { padding: 16px; } .bar { height:96px; } .bar .value { right:22px; font-size:37px; } .bar .label { left:22px; } .bar .detail { left:22px; } }
+    @media (prefers-reduced-motion: reduce) { .fill, .fill::after, .fill::before { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>进度条 · 参考实现实验室</h1>
+    <p class="intro">这次不再模拟海浪、粒子或曲线。三种预览分别取自成熟组件中的三条原则：SVG 式清晰进度路径、单层低频氛围、单次缓慢流光。右侧始终是干净的半透明未消耗区域。</p>
+    <div class="rule"><strong>统一约束：</strong>不出现白色扫描线；不出现闪电、规则粒子或高频循环；进度边界不额外描边，只通过颜色自然过渡表达；动画不能压过额度与数字本身。</div>
+    <section class="controls"><label>已消耗 <input id="amount" type="range" min="5" max="95" value="54"><output id="amountOut">54%</output></label><label>运行状态 <select id="state"><option value="idle">空闲 · 青蓝</option><option value="thinking">思考中 · 紫蓝</option><option value="working">执行中 · 琥珀</option><option value="complete">完成 · 绿色</option><option value="error">异常 · 红色</option></select></label></section>
+    <section class="cards">
+      <article data-choice="A">
+        <div class="head"><strong>A · 缓流路径</strong><span>基于 SVG 路径的清晰表达</span></div>
+        <div class="bar style-path"><div class="fill"></div><span class="label">5 小时 · 已消耗</span><span class="detail">Weekly 77% 剩余</span><strong class="value">46%</strong></div>
+        <p class="note">最接近正式进度组件：深色实底、极淡的层次、14 秒才走完一次的柔光。视觉重点仍然是进度与百分比。</p><button type="button">选择 A</button>
+      </article>
+      <article data-choice="B">
+        <div class="head"><strong>B · 呼吸网格</strong><span>单层低频氛围</span></div>
+        <div class="bar style-mesh"><div class="fill"></div><span class="label">5 小时 · 已消耗</span><span class="detail">Weekly 77% 剩余</span><strong class="value">46%</strong></div>
+        <p class="note">仅让蓝色的深浅层次以 20 秒周期缓慢移动，近似液态玻璃的折射感，但没有会被看成污渍或粒子的元素。</p><button type="button">选择 B</button>
+      </article>
+      <article data-choice="C">
+        <div class="head"><strong>C · 缎面扫光</strong><span>单次方向性反馈</span></div>
+        <div class="bar style-sheen"><div class="fill"></div><span class="label">5 小时 · 已消耗</span><span class="detail">Weekly 77% 剩余</span><strong class="value">46%</strong></div>
+        <p class="note">每 16 秒仅有一束低不透明度的缎面光从左向右掠过。适合作为“正在执行”的暗示，而不会造成持续注意力干扰。</p><button type="button">选择 C</button>
+      </article>
+    </section>
+    <div id="choice"><strong>尚未选择。</strong> 这三种均可直接翻译为 Rust/Direct2D 的渐变、裁切与低频位移，无需 WebView 或完整 WebGL。</div>
+  </main>
+  <script>
+    (() => {
+      const root = document.documentElement, amount = document.querySelector('#amount'), out = document.querySelector('#amountOut'), state = document.querySelector('#state');
+      const colors = { idle:['#51d9ff','#1550bf','#65e8ff'], thinking:['#a777ff','#3c59d4','#eadcff'], working:['#ffb331','#b85b12','#ffe6a0'], complete:['#4fe1a1','#0c8d67','#d9ffe9'], error:['#ff6482','#ad2948','#ffdce4'] };
+      function update() { const used = Number(amount.value), remaining = 100 - used; out.textContent = `${used}%`; document.querySelectorAll('.fill').forEach(x => x.style.setProperty('--used', `${used}%`)); document.querySelectorAll('.value').forEach(x => x.textContent = `${remaining}%`); const [accent, deep, glow] = colors[state.value]; root.style.setProperty('--accent', accent); root.style.setProperty('--deep', deep); root.style.setProperty('--glow', glow); }
+      amount.addEventListener('input', update); state.addEventListener('change', update); update();
+      document.querySelectorAll('article button').forEach(button => button.addEventListener('click', () => { const article = button.closest('article'); document.querySelectorAll('article').forEach(x => x.classList.toggle('selected', x === article)); document.querySelector('#choice').innerHTML = `<strong>已选择 ${article.dataset.choice}。</strong> 当前只记录视觉决策；确认后才以此为唯一动效基础，连接官方额度、状态色、自动弹窗与详情卡片。`; }));
+    })();
+  </script>
+</body>
+</html>

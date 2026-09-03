@@ -1,0 +1,13 @@
+[package]
+name = "codex-taskbar-adapters-codex-app-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+codex-taskbar-application.workspace = true
+codex-taskbar-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

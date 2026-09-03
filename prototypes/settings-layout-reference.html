@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Taskbar · 设置原型</title>
+  <script src="taskbar-visual-contract.js"></script>
+  <style>
+    :root { color-scheme:light; font-family:"Segoe UI Variable","Microsoft YaHei UI",sans-serif; color:#1e3448; background:#d9e6ef; }
+    * { box-sizing:border-box; } body { position:relative; min-height:100vh; margin:0; overflow-x:hidden; background:radial-gradient(760px 470px at 2% -12%,rgba(255,255,255,.98),transparent 70%),radial-gradient(620px 450px at 100% 12%,rgba(77,204,237,.24),transparent 69%),linear-gradient(145deg,#e0edf5,#b9d2e0); }
+    body::before { position:fixed; z-index:0; inset:-24vmax; content:""; pointer-events:none; background:radial-gradient(30vmax 20vmax at 23% 38%,rgba(255,255,255,.70),transparent 72%),radial-gradient(27vmax 20vmax at 74% 64%,rgba(61,199,234,.25),transparent 70%),linear-gradient(120deg,transparent 34%,rgba(255,255,255,.47) 50%,transparent 66%); filter:blur(6px); animation:ambient 15s ease-in-out infinite alternate; }
+    @keyframes ambient { from { opacity:.52; transform:translate3d(-3vmax,-1vmax,0); } 55% { opacity:.72; transform:translate3d(3vmax,2vmax,0); } to { opacity:.58; transform:translate3d(1vmax,-3vmax,0); } }
+    main { position:relative; z-index:1; width:min(940px,calc(100vw - 44px)); margin:34px auto 68px; } h1,h2,h3,p { margin:0; } .eyebrow { color:#087f9c; font-size:11px; font-weight:730; letter-spacing:.075em; text-transform:uppercase; } h1 { margin-top:5px; font-size:28px; letter-spacing:-.055em; } .lead { margin-top:9px; color:#5d758b; font-size:13px; line-height:1.65; }
+    .shell { position:relative; isolation:isolate; display:grid; grid-template-columns:225px minmax(0,1fr); min-height:660px; overflow:hidden; margin-top:24px; border:1px solid rgba(255,255,255,.78); border-radius:27px; background:linear-gradient(135deg,rgba(255,255,255,.82),rgba(225,242,251,.61)); box-shadow:inset 0 1px rgba(255,255,255,.96),inset 0 -1px rgba(73,128,171,.12); backdrop-filter:blur(27px) saturate(142%); -webkit-backdrop-filter:blur(27px) saturate(142%); }
+    .shell::before { position:absolute; z-index:0; inset:-25px; content:""; pointer-events:none; background:radial-gradient(340px 180px at 16% 8%,rgba(255,255,255,.89),transparent 68%),radial-gradient(290px 210px at 88% 84%,rgba(56,214,241,.18),transparent 72%),linear-gradient(112deg,transparent 27%,rgba(255,255,255,.38) 49%,transparent 70%); animation:glass 12s ease-in-out infinite alternate; }
+    .shell > * { position:relative; z-index:1; } @keyframes glass { from { opacity:.50; transform:translate3d(-8px,-3px,0); } 55% { opacity:.68; transform:translate3d(9px,4px,0); } to { opacity:.54; transform:translate3d(3px,-6px,0); } }
+    aside { padding:25px 18px 19px; border-right:1px solid rgba(65,118,156,.16); background:rgba(255,255,255,.17); } .brand { display:grid; gap:4px; padding:0 8px 23px; } .brand strong { color:#1d3449; font-size:23px; letter-spacing:-.055em; } .brand span { color:#617a91; font-size:11px; }
+    nav { display:grid; gap:7px; } .nav-item { display:flex; align-items:center; gap:9px; width:100%; min-height:47px; padding:0 12px; border:1px solid transparent; border-radius:14px; color:#4e687e; font:inherit; font-size:13px; font-weight:610; text-align:left; background:transparent; cursor:pointer; } .nav-item::before { width:7px; height:7px; border-radius:50%; background:#a4baca; content:""; } .nav-item.active { border-color:rgba(28,190,213,.62); color:#15536a; background:linear-gradient(105deg,rgba(255,255,255,.72),rgba(174,236,244,.37)); box-shadow:inset 0 1px rgba(255,255,255,.9),0 5px 13px rgba(52,148,173,.08); } .nav-item.active::before { background:#09a6bd; box-shadow:0 0 10px rgba(7,166,190,.42); } .nav-item:disabled { opacity:.66; cursor:default; } .nav-hint { margin-top:7px; padding:0 12px; color:#7890a3; font-size:10px; line-height:1.55; }
+    .side-foot { position:absolute; right:18px; bottom:20px; left:18px; padding-top:16px; border-top:1px solid rgba(84,129,160,.14); color:#71899c; font-size:10px; line-height:1.55; }
+    .content { display:flex; min-width:0; flex-direction:column; padding:28px 29px 20px; } .content-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; } h2 { font-size:25px; letter-spacing:-.055em; } .content-head p { margin-top:7px; color:#617a91; font-size:12px; line-height:1.55; } .page-tag { flex:0 0 auto; padding:8px 10px; border:1px solid rgba(255,255,255,.80); border-radius:999px; color:#087f9c; font-size:10px; font-weight:680; background:rgba(255,255,255,.48); box-shadow:inset 0 1px rgba(255,255,255,.9); }
+    /* 预览底色与左侧已选项一致：为透明的未使用区提供干净、稳定的浅青承托。 */
+    .preview { position:relative; overflow:hidden; margin-top:19px; padding:17px 18px; border:1px solid rgba(28,190,213,.47); border-radius:18px; background:radial-gradient(330px 72px at 50% 67%,rgba(29,67,94,.62),rgba(64,111,139,.25) 64%,transparent 78%),linear-gradient(105deg,rgba(255,255,255,.78) 0%,rgba(199,235,243,.58) 48%,rgba(102,160,184,.42) 100%); box-shadow:inset 0 1px rgba(255,255,255,.90),0 5px 13px rgba(52,148,173,.06); } .preview::before { position:absolute; inset:0; content:""; pointer-events:none; background:linear-gradient(112deg,transparent 35%,rgba(255,255,255,.26) 50%,transparent 64%); animation:preview-sheen 8s ease-in-out infinite alternate; } @keyframes preview-sheen { from { opacity:.16; transform:translateX(-26%); } to { opacity:.36; transform:translateX(26%); } } .preview-head { position:relative; z-index:1; display:flex; justify-content:space-between; color:#557187; font-size:11px; } .preview-head strong { color:#1e4057; font-size:12px; }
+    .taskbar-preview { position:relative; z-index:1; isolation:isolate; width:min(420px,100%); height:62px; overflow:hidden; margin-top:14px; border-radius:999px; background:rgba(7,17,34,.57); box-shadow:0 12px 23px rgba(22,58,87,.28),inset 0 1px rgba(255,255,255,.13),inset 0 -1px rgba(0,0,0,.22); } .taskbar-preview::before { position:absolute; z-index:0; inset:0; content:""; background:radial-gradient(120px 56px at 89% 48%,rgba(96,209,255,.12),transparent 72%),linear-gradient(90deg,rgba(6,16,34,.18),rgba(12,29,54,.09)); } .taskbar-preview::after { position:absolute; z-index:4; inset:1px; content:""; pointer-events:none; border-radius:inherit; background:linear-gradient(105deg,transparent 22%,rgba(255,255,255,.20) 42%,transparent 58%); mix-blend-mode:screen; opacity:.34; transform:translateX(-120%); animation:bar-sheen 5.8s cubic-bezier(.38,.02,.2,1) infinite; } @keyframes bar-sheen { 0%,24% { transform:translateX(-120%); opacity:0; } 36% { opacity:.42; } 70% { transform:translateX(155%); opacity:.18; } 100% { transform:translateX(155%); opacity:0; } }
+    .quota-layer { position:absolute; z-index:1; left:0; height:100%; overflow:hidden; border-radius:inherit; } .quota-layer.week { width:83%; background:linear-gradient(90deg,#1b59a8 0%,#266fce 37%,#34bfe6 91%,#60e8ff 100%); opacity:.87; } .quota-layer.five { width:63%; background:radial-gradient(85px 55px at 27% 15%,rgba(196,133,255,.74),transparent 66%),radial-gradient(65px 40px at 74% 74%,rgba(74,226,255,.70),transparent 70%),linear-gradient(90deg,#4820bd 0%,#6b4be7 43%,#259ed8 100%); } .quota-layer.five::after { position:absolute; top:-29px; left:-42px; width:130px; height:122px; border-radius:47% 55% 45% 58%; content:""; background:radial-gradient(ellipse at 43% 49%,rgba(255,255,255,.80),rgba(186,237,255,.24) 28%,transparent 66%); filter:blur(6px); animation:fluid-front 4.8s ease-in-out infinite alternate; } .quota-layer.five::before { position:absolute; right:-15px; top:-12px; width:36px; height:86px; content:""; border-radius:45%; background:linear-gradient(180deg,transparent,rgba(255,255,255,.78),rgba(115,236,255,.88),transparent); filter:blur(2px); animation:front-pulse 3.8s ease-in-out infinite; } @keyframes fluid-front { from { transform:translateX(-28px) rotate(-10deg) scale(.95); } to { transform:translateX(254px) rotate(12deg) scale(1.12); } } @keyframes front-pulse { 0%,100% { opacity:.35; transform:scaleY(.82); } 48% { opacity:.88; transform:scaleY(1.16); } }
+    .bar-text { position:absolute; z-index:3; top:13px; left:17px; color:#f9fdff; font-size:13px; font-weight:690; text-shadow:0 1px 8px rgba(10,25,45,.48); } .bar-text small { display:block; margin-top:4px; color:#d5f1ff; font-size:9px; font-weight:560; } .bar-quota { position:absolute; z-index:3; top:12px; right:18px; color:#fff; font-size:21px; font-weight:700; letter-spacing:-.06em; text-shadow:0 1px 9px rgba(8,20,38,.48); } .bar-quota small { display:block; margin-top:3px; color:#e8f7ff; font-size:9px; font-weight:590; text-align:right; }
+    /* 预览不再复制近似动画：iframe 直接加载已确认的 Pavel 双额度任务栏组件。 */
+    .taskbar-preview { height:62px; overflow:visible; margin:14px auto 0; background:transparent; box-shadow:none; transition:width .16s ease; } .taskbar-preview::before,.taskbar-preview::after,.taskbar-preview .quota-layer,.taskbar-preview .bar-text,.taskbar-preview .bar-quota { display:none; } .taskbar-preview iframe { display:block; width:100%; height:62px; border:0; border-radius:999px; background:transparent; }
+    .settings-page { display:none; min-width:0; flex:1; flex-direction:column; } .settings-page.active { display:flex; } .section { margin-top:20px; } .section h3 { color:#234055; font-size:14px; font-weight:680; } .section h3::before { display:inline-block; width:3px; height:15px; margin-right:7px; border-radius:3px; background:#1bbdd0; content:""; vertical-align:-3px; } .section-note { margin-top:5px; color:#698297; font-size:10.5px; }
+    .choice-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:11px; } .choice { min-height:70px; padding:12px; border:1px solid rgba(255,255,255,.76); border-radius:15px; background:rgba(255,255,255,.39); box-shadow:inset 0 1px rgba(255,255,255,.77); cursor:pointer; } .choice input { position:absolute; opacity:0; pointer-events:none; } .choice.active { border-color:rgba(30,188,211,.61); background:linear-gradient(120deg,rgba(255,255,255,.74),rgba(172,237,244,.35)); } .choice span { color:#1e4057; font-size:12px; font-weight:670; } .choice small { display:block; margin-top:6px; color:#6b8398; font-size:10px; line-height:1.35; }
+    .setting-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:11px; } .setting { min-height:85px; padding:12px; border:1px solid rgba(255,255,255,.73); border-radius:15px; background:rgba(255,255,255,.36); box-shadow:inset 0 1px rgba(255,255,255,.76); } .setting.wide { grid-column:span 2; min-height:75px; } .setting label { display:flex; justify-content:space-between; gap:12px; color:#31536a; font-size:11px; font-weight:630; } output,.input-limit { color:#087f9c; font-size:10px; font-weight:700; } input[type="range"] { width:100%; margin-top:13px; accent-color:#12aec1; } input[type="number"] { width:100%; height:34px; margin-top:10px; padding:0 10px; border:1px solid rgba(28,190,213,.40); border-radius:9px; outline:0; color:#16475d; background:rgba(255,255,255,.70); font:inherit; font-size:11px; font-weight:680; box-shadow:inset 0 1px rgba(255,255,255,.92); } input[type="number"]:focus { border-color:rgba(28,190,213,.78); box-shadow:0 0 0 3px rgba(28,190,213,.12); } .segment { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-top:11px; padding:4px; border-radius:10px; background:rgba(33,79,107,.08); } .segment button { min-height:28px; border:0; border-radius:7px; color:#638095; background:transparent; font:inherit; font-size:10px; font-weight:670; cursor:pointer; } .segment button.active { color:#15536a; background:rgba(255,255,255,.80); box-shadow:0 3px 8px rgba(49,100,132,.11); }
+    .content-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:11px; } .content-option { display:grid; gap:6px; min-height:96px; padding:13px; border:1px solid rgba(255,255,255,.78); border-radius:15px; color:#31536a; text-align:left; background:rgba(255,255,255,.38); box-shadow:inset 0 1px rgba(255,255,255,.82); cursor:pointer; } .content-option[aria-pressed="true"] { border-color:rgba(30,188,211,.54); background:linear-gradient(120deg,rgba(255,255,255,.76),rgba(172,237,244,.31)); } .content-option strong { display:flex; align-items:center; justify-content:space-between; color:#234055; font:inherit; font-size:12px; font-weight:700; } .content-option small { color:#698297; font-size:10px; line-height:1.45; } .switch-mark { width:29px; height:17px; border-radius:999px; background:rgba(73,105,128,.23); box-shadow:inset 0 1px rgba(255,255,255,.55); } .switch-mark::after { display:block; width:13px; height:13px; margin:2px; border-radius:50%; background:#fff; box-shadow:0 2px 5px rgba(42,87,121,.18); content:""; transition:transform .16s ease; } .content-option[aria-pressed="true"] .switch-mark { background:#20b7c9; } .content-option[aria-pressed="true"] .switch-mark::after { transform:translateX(12px); } .rule-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin-top:11px; } .rule-card { min-height:104px; padding:13px; border:1px solid rgba(255,255,255,.78); border-radius:15px; background:rgba(255,255,255,.40); box-shadow:inset 0 1px rgba(255,255,255,.84); } .rule-card i { display:block; width:8px; height:8px; margin-bottom:10px; border-radius:50%; background:#20b7c9; box-shadow:0 0 10px rgba(32,183,201,.35); } .rule-card:nth-child(2) i { background:#7654d9; box-shadow:0 0 10px rgba(118,84,217,.27); } .rule-card:nth-child(3) i { background:#bf7b2c; box-shadow:0 0 10px rgba(191,123,44,.26); } .rule-card strong { display:block; color:#234055; font-size:11px; } .rule-card small { display:block; margin-top:6px; color:#698297; font-size:9.5px; line-height:1.45; } .popup-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:11px; padding:13px; border:1px solid rgba(28,190,213,.40); border-radius:15px; background:linear-gradient(105deg,rgba(255,255,255,.67),rgba(174,236,244,.26)); } .popup-summary strong { color:#234055; font-size:12px; } .popup-summary p { margin-top:4px; color:#698297; font-size:10px; line-height:1.45; } .popup-summary .pill { flex:0 0 auto; padding:7px 9px; border-radius:999px; color:#0a788f; font-size:10px; font-weight:720; background:rgba(255,255,255,.70); }
+    .sync-health { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:19px; padding:14px 15px; border:1px solid rgba(28,190,213,.47); border-radius:17px; background:linear-gradient(105deg,rgba(255,255,255,.72),rgba(174,236,244,.37)); box-shadow:inset 0 1px rgba(255,255,255,.90),0 5px 13px rgba(52,148,173,.06); } .sync-health strong { display:flex; align-items:center; gap:8px; color:#234055; font-size:12px; } .sync-health strong::before { width:8px; height:8px; border-radius:50%; background:#1bbdd0; box-shadow:0 0 11px rgba(27,189,208,.47); content:""; } .sync-health small { display:block; margin-top:5px; color:#698297; font-size:10px; } .sync-health .freshness { flex:0 0 auto; color:#087f9c; font-size:11px; font-weight:730; } .sync-grid { display:grid; grid-template-columns:1.25fr 1fr; gap:10px; margin-top:11px; } .sync-card { min-height:125px; padding:14px; border:1px solid rgba(255,255,255,.78); border-radius:15px; background:rgba(255,255,255,.39); box-shadow:inset 0 1px rgba(255,255,255,.84); } .sync-card h4 { margin:0; color:#234055; font-size:12px; } .sync-card p { margin:6px 0 0; color:#698297; font-size:10px; line-height:1.48; } .sync-mode { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:12px; } .sync-mode button { min-height:39px; padding:6px 8px; border:1px solid rgba(255,255,255,.76); border-radius:10px; color:#577389; font:inherit; font-size:10px; font-weight:680; background:rgba(255,255,255,.42); cursor:pointer; } .sync-mode button.active { border-color:rgba(28,190,213,.58); color:#14546a; background:linear-gradient(105deg,rgba(255,255,255,.78),rgba(174,236,244,.38)); } .sync-card .small-button { width:100%; min-height:39px; margin-top:12px; border:1px solid rgba(28,190,213,.48); border-radius:10px; color:#135a70; font:inherit; font-size:10px; font-weight:700; background:rgba(255,255,255,.64); cursor:pointer; } .retention { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:12px; } .retention button { min-height:37px; border:1px solid rgba(255,255,255,.76); border-radius:10px; color:#5e788d; font:inherit; font-size:10px; font-weight:680; background:rgba(255,255,255,.42); cursor:pointer; } .retention button.active { border-color:rgba(28,190,213,.58); color:#14546a; background:linear-gradient(105deg,rgba(255,255,255,.78),rgba(174,236,244,.38)); } .safety-strip { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:11px; } .safety-note { min-height:82px; padding:13px; border:1px solid rgba(255,255,255,.75); border-radius:15px; background:rgba(255,255,255,.35); box-shadow:inset 0 1px rgba(255,255,255,.80); } .safety-note strong { color:#31536a; font-size:11px; } .safety-note p { margin-top:6px; color:#698297; font-size:9.5px; line-height:1.48; } .history-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:11px; padding:13px; border:1px solid rgba(255,255,255,.75); border-radius:15px; background:rgba(255,255,255,.34); } .history-row strong { color:#31536a; font-size:11px; } .history-row small { display:block; margin-top:5px; color:#698297; font-size:9.5px; } .history-row button { flex:0 0 auto; min-height:33px; padding:0 11px; border:1px solid rgba(183,109,109,.32); border-radius:9px; color:#986060; font:inherit; font-size:10px; font-weight:680; background:rgba(255,255,255,.55); cursor:pointer; }
+    .version-card { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-top:19px; padding:15px; border:1px solid rgba(28,190,213,.47); border-radius:17px; background:linear-gradient(105deg,rgba(255,255,255,.72),rgba(174,236,244,.37)); box-shadow:inset 0 1px rgba(255,255,255,.90),0 5px 13px rgba(52,148,173,.06); } .version-card .version { color:#234055; font-size:17px; font-weight:760; letter-spacing:-.045em; } .version-card small { display:block; margin-top:4px; color:#698297; font-size:10px; } .version-card .channel { flex:0 0 auto; padding:7px 10px; border:1px solid rgba(255,255,255,.80); border-radius:999px; color:#087f9c; font-size:10px; font-weight:720; background:rgba(255,255,255,.66); } .check-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; } .check-row button { min-height:39px; border:1px solid rgba(28,190,213,.48); border-radius:10px; color:#135a70; font:inherit; font-size:10px; font-weight:700; background:rgba(255,255,255,.64); cursor:pointer; } .check-row button.primary { color:#064f61; background:linear-gradient(135deg,rgba(112,233,239,.72),rgba(45,183,201,.53)); } .proxy-line { display:flex; align-items:flex-start; gap:9px; margin-top:12px; padding:10px; border-radius:10px; background:rgba(255,255,255,.44); } .proxy-line i { flex:0 0 auto; width:8px; height:8px; margin-top:3px; border-radius:50%; background:#20b7c9; box-shadow:0 0 9px rgba(32,183,201,.36); } .proxy-line strong { display:block; color:#31536a; font-size:10px; } .proxy-line small { display:block; margin-top:3px; color:#698297; font-size:9px; line-height:1.45; } .toggle-row { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-top:12px; } .toggle-row > div { min-width:0; flex:1; } .toggle-row strong { color:#31536a; font-size:10px; } .toggle-row small { display:block; margin-top:3px; color:#698297; font-size:9px; line-height:1.4; } .toggle-button { position:relative; width:36px; height:20px; flex:0 0 auto; border:0; border-radius:999px; background:#20b7c9; box-shadow:inset 0 1px rgba(255,255,255,.48); cursor:pointer; } .toggle-button::after { position:absolute; top:2px; left:2px; width:16px; height:16px; margin:0; border-radius:50%; background:#fff; box-shadow:0 2px 5px rgba(42,87,121,.18); content:""; transition:transform .16s ease; } .toggle-button[aria-pressed="true"]::after { transform:translateX(16px); } .toggle-button[aria-pressed="false"] { background:rgba(73,105,128,.23); } .toggle-button[aria-pressed="false"]::after { transform:translateX(0); } .diagnostic-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:11px; padding:13px; border:1px solid rgba(255,255,255,.75); border-radius:15px; background:rgba(255,255,255,.35); } .diagnostic-row strong { color:#31536a; font-size:11px; } .diagnostic-row small { display:block; margin-top:5px; color:#698297; font-size:9.5px; } .diagnostic-row button { flex:0 0 auto; min-height:33px; padding:0 11px; border:1px solid rgba(28,190,213,.45); border-radius:9px; color:#135a70; font:inherit; font-size:10px; font-weight:680; background:rgba(255,255,255,.57); cursor:pointer; }
+    .actions { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:auto; padding-top:20px; } .status { color:#658196; font-size:10.5px; } .buttons { display:flex; gap:8px; } .buttons button { min-height:36px; padding:0 13px; border:1px solid rgba(255,255,255,.82); border-radius:11px; color:#355a70; background:rgba(255,255,255,.56); font:inherit; font-size:11px; font-weight:670; cursor:pointer; box-shadow:inset 0 1px rgba(255,255,255,.92),0 5px 12px rgba(42,87,121,.08); } .buttons .apply { color:#064f61; border-color:rgba(24,181,200,.62); background:linear-gradient(135deg,rgba(112,233,239,.72),rgba(45,183,201,.53)); }
+    /* 生产设置页是任务栏软件内的无框卡片，而不是系统风格的独立设置程序。
+       仅保留中间 shell；外层不绘制背景、标题或多余留白。 */
+    html.settings-embed,html.settings-embed body { width:100%; height:100%; min-height:0; overflow:hidden; background:transparent; }
+    html.settings-embed body::before,html.settings-embed > body::before { display:none; }
+    html.settings-embed main { width:calc(100% - 40px); max-width:940px; height:calc(100% - 40px); margin:20px auto; }
+    html.settings-embed main > .eyebrow,html.settings-embed main > h1,html.settings-embed main > .lead { display:none; }
+    html.settings-embed .shell { height:100%; min-height:0; margin-top:0; border-radius:27px; background:linear-gradient(135deg,#fbfeff,#e7f5fb); animation:settings-enter .18s cubic-bezier(.2,.8,.2,1) both; }
+    html.settings-embed .shell::after { position:absolute; z-index:4; top:0; right:44px; left:0; height:26px; content:""; cursor:move; }
+    html.settings-embed .content { min-height:0; overflow-x:hidden; overflow-y:auto; scrollbar-width:thin; scrollbar-color:rgba(27,189,208,.45) transparent; }
+    html.settings-embed .brand,html.settings-embed .content-head { user-select:none; -webkit-user-select:none; }
+    .single-display-note { margin-top:11px; padding:11px 12px; border:1px solid rgba(28,190,213,.35); border-radius:12px; color:#46677d; background:rgba(255,255,255,.44); font-size:10.5px; }
+    @keyframes settings-enter { from { opacity:0; transform:translateY(7px) scale(.992); } to { opacity:1; transform:none; } }
+    @media (prefers-reduced-motion:reduce) { body::before,.shell::before,.preview::before,html.settings-embed .shell { animation:none!important; } }
+    html.settings-embed .actions { position:sticky; z-index:3; bottom:-1px; margin-top:18px; padding:12px 0 2px; background:linear-gradient(180deg,rgba(235,247,252,0),rgba(235,247,252,.96) 24%); backdrop-filter:blur(12px); }
+    .chrome-close { position:absolute; z-index:5; top:17px; right:18px; display:grid; width:29px; height:29px; place-items:center; border:1px solid rgba(65,118,156,.18); border-radius:50%; color:#4c6b80; background:rgba(255,255,255,.56); box-shadow:inset 0 1px rgba(255,255,255,.9),0 5px 12px rgba(42,87,121,.11); font:inherit; font-size:18px; line-height:1; cursor:pointer; }
+    .chrome-close:hover { color:#0c7189; border-color:rgba(28,190,213,.54); background:rgba(255,255,255,.84); }
+    @media (max-width:700px) { main { width:min(100% - 26px,580px); margin-top:22px; } .shell { grid-template-columns:1fr; } aside { min-height:0; border-right:0; border-bottom:1px solid rgba(65,118,156,.16); } .brand { padding-bottom:15px; } nav { grid-template-columns:repeat(2,1fr); } .side-foot { display:none; } .content { padding:22px 16px 18px; } .choice-grid,.setting-grid { grid-template-columns:1fr; } .setting.wide { grid-column:auto; } }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Settings / layout</p>
+    <h1>设置 · 任务栏布局</h1>
+    <p class="lead">视觉与交互原型。当前只确认“任务栏布局”页；其它页面会在此页确认后逐页设计。</p>
+    <section class="shell" aria-label="Codex Taskbar 设置">
+      <aside>
+        <div class="brand"><p class="eyebrow">Codex Taskbar</p><strong>设置</strong><span>官方登录 · 流体任务栏</span></div>
+        <nav aria-label="设置分类">
+          <button class="nav-item active" type="button" data-page-target="layout">任务栏布局</button>
+          <button class="nav-item" type="button" data-page-target="sync">同步与记录</button>
+          <button class="nav-item" type="button" data-page-target="diagnostics">诊断与关于</button>
+        </nav>
+        <p class="side-foot">设置窗口仅在打开时存在；关闭后不占用常驻任务栏的渲染与采集资源。</p>
+      </aside>
+      <section class="content">
+        <section class="settings-page active" data-page="layout">
+        <header class="content-head"><div><h2>任务栏布局</h2><p>默认优先放在副屏，并避让通知区与 TrafficMonitor。</p></div><span class="page-tag">第 1 / 3 页</span></header>
+        <section class="preview"><div class="preview-head"><span>实时预览 · 与任务栏本体共用视觉配置</span><strong id="previewPosition">副屏 · 避让 14px</strong></div><div class="taskbar-preview" id="taskbarPreview"><iframe id="taskbarFrame" src="fluid-front-reference.html?embed=1&v=10&width=420&glass=0&frost=0.294&scenario=normal&activity=executing" title="任务栏实时预览"></iframe></div></section>
+        <section class="section" id="targetDisplaySection"><h3>目标显示器</h3><p class="section-note">显示器变化时会自动回退到可用屏幕，不会覆盖系统通知区。</p><div class="choice-grid" id="displayChoices"><label class="choice active"><input checked name="display" type="radio" value="secondary"><span>自动选择副屏</span><small>未连接副屏时回退到主屏</small></label><label class="choice"><input name="display" type="radio" value="primary"><span>主屏</span><small>用于只接一台显示器的情况</small></label></div><p class="single-display-note" id="singleDisplayNote">当前仅检测到主屏，已自动使用主屏。</p></section>
+        <section class="section"><h3>位置与空间</h3><div class="setting-grid"><div class="setting"><label>停靠位置 <output id="dockOutput">靠右</output></label><div class="segment" id="dockSegment"><button type="button" data-dock="left">靠左</button><button class="active" type="button" data-dock="right">靠右</button></div></div><div class="setting"><label for="widthRange">任务栏宽度 <output id="widthOutput">420 px</output></label><input id="widthRange" type="range" min="200" max="620" step="1" value="420"></div><div class="setting"><label for="trafficRange">任务栏避让 <output id="trafficOutput">0 px</output></label><input id="trafficRange" type="range" min="0" max="960" step="1" value="0"></div><div class="setting"><label>未使用区域透明度 <output id="opacityOutput">64%</output></label><input id="opacityRange" type="range" min="35" max="86" value="64"></div></div></section>
+        <div class="actions"><span class="status" id="status">已加载当前设置 · 未写入磁盘</span><div class="buttons"><button id="restore" type="button">恢复默认</button><button type="button">关闭</button><button class="apply" id="apply" type="button">保存并应用</button></div></div>
+        </section>
+        <section class="settings-page" data-page="sync">
+          <header class="content-head"><div><h2>同步与记录</h2><p>官方额度以事件更新为优先，低频校验为后备；本机只保存聚合用量，不保存对话内容。</p></div><span class="page-tag">第 2 / 3 页</span></header>
+          <section class="sync-health"><div><strong>官方登录数据可用</strong><small>最新数据 14 秒前 · 账户与额度信息只在需要时校验</small></div><span class="freshness">自动同步</span></section>
+          <section class="section"><h3>官方数据同步</h3><p class="section-note">不让界面刷新触发网络请求；遇到限制会自动退避，不会持续重试。</p><div class="sync-grid"><article class="sync-card"><h4>同步策略</h4><p>事件可用时立即更新；事件静默时才进行一次低频账户校验。</p><div class="sync-mode" id="syncMode"><button class="active" type="button" data-sync-mode="smart">智能 · 推荐</button><button type="button" data-sync-mode="economy">节省请求</button></div></article><article class="sync-card"><h4>手动刷新</h4><p>仅请求一次官方数据；遵循冷却时间，不会绕过限流。</p><button class="small-button" id="manualRefresh" type="button">立即检查</button></article></div></section>
+          <section class="section"><h3>本机历史记录</h3><p class="section-note">仅此设备可见，用于今日消耗、历史累计与趋势图；不代表其他设备的账号用量。</p><div class="sync-grid"><article class="sync-card"><h4>保留时长</h4><p>超过期限的聚合记录会在低优先级清理任务中删除。</p><div class="retention" id="retention"><button type="button" data-retention="30">30 天</button><button class="active" type="button" data-retention="90">90 天</button><button type="button" data-retention="365">365 天</button></div></article><article class="sync-card"><h4>当前本机记录</h4><p>按小时聚合 · 仅本机账本 · 详情卡显示真实累计</p><button class="small-button" id="showHistory" type="button">查看历史趋势</button></article></div></section>
+          <section class="section"><h3>写盘与隐私保护</h3><div class="safety-strip"><article class="safety-note"><strong>批量写入，不随每个 Token 落盘</strong><p>先在内存合并，再定时批量写入；避免此前高频磁盘 I/O 导致系统卡顿。</p></article><article class="safety-note"><strong>不记录 Prompt、回复或完整线程标识</strong><p>只保存时间桶和 Token 聚合值；不会上传本机历史数据。</p></article></div><div class="history-row"><div><strong>清理本机历史</strong><small>只删除本机聚合记录，不影响 Codex、官方账户或订阅额度。</small></div><button id="clearHistory" type="button">清理记录</button></div></section>
+          <div class="actions"><span class="status" id="syncStatus">同步与记录预览 · 尚未写入磁盘</span><div class="buttons"><button type="button" id="syncRestore">恢复默认</button><button type="button">关闭</button><button class="apply" type="button" id="syncApply">保存并应用</button></div></div>
+        </section>
+        <section class="settings-page" data-page="diagnostics">
+          <header class="content-head"><div><h2>诊断与关于</h2><p>在不暴露账户、对话或密钥的前提下，检查运行状况、日志与应用更新。</p></div><span class="page-tag">第 3 / 3 页</span></header>
+          <section class="version-card"><div><strong class="version">Codex Taskbar 0.1.0</strong><small>Windows x64 · 本机构建 · 发布来源 GitHub Releases</small></div><span class="channel">稳定版</span></section>
+          <section class="section"><h3>检查更新</h3><p class="section-note">更新清单和安装包均需校验签名 / SHA-256；下载完成后由更新助手在程序退出后替换文件。</p><div class="sync-grid"><article class="sync-card"><h4>更新检查与安装</h4><p>每天后台检查一次；发现新版本后显示更新说明，用户确认后下载、安装并重启。</p><div class="check-row"><button id="checkUpdates" type="button">检查更新</button><button class="primary" id="downloadUpdate" type="button">下载并安装</button></div></article><article class="sync-card"><h4>代理与下载加速</h4><div class="proxy-line"><i></i><div><strong>自动使用 Windows 系统代理 / PAC</strong><small>若本机代理未启用系统代理，提供明确的自定义代理入口，不猜测端口。</small></div></div><div class="toggle-row"><div><strong>自适应分块下载</strong><small>仅服务器支持 Range 且安装包较大时启用，最多 4 路；失败自动单路重试。</small></div><button class="toggle-button" id="chunkDownload" type="button" aria-pressed="true" aria-label="自适应分块下载"></button></div></article></div></section>
+          <section class="section"><h3>运行诊断</h3><p class="section-note">日志写入等级在开发时默认 Debug；分享诊断包前会移除密钥、账户标识、Prompt 和完整线程标识。</p><div class="sync-grid"><article class="sync-card"><h4>日志等级</h4><p>推荐日常使用 Info；开发或排查问题时切换 Debug。</p><div class="sync-mode" id="logLevel"><button type="button" data-log-level="info">Info</button><button class="active" type="button" data-log-level="debug">Debug</button></div></article><article class="sync-card"><h4>日志保留</h4><p>超过限制时在低优先级任务中轮转，避免日志持续占用磁盘。</p><div class="retention" id="logRetention"><button type="button" data-log-retention="7">7 天</button><button class="active" type="button" data-log-retention="30">30 天</button><button type="button" data-log-retention="90">90 天</button></div></article></div><div class="diagnostic-row"><div><strong>生成脱敏诊断包</strong><small>包含版本、运行健康度、数据源状态和错误摘要；不含私密内容。</small></div><button id="exportDiagnostics" type="button">生成诊断包</button></div></section>
+          <div class="actions"><span class="status" id="diagnosticStatus">诊断与关于预览 · 尚未写入磁盘</span><div class="buttons"><button type="button" id="diagnosticRestore">恢复默认</button><button type="button">关闭</button><button class="apply" type="button" id="diagnosticApply">保存并应用</button></div></div>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const $ = id => document.getElementById(id);
+      // 预览和本体共用同一个视觉契约；这里不再绘制一套简化版胶囊。
+      const visualContract = window.CodexTaskbarVisualContract || {
+        previewScenario: 'normal', previewActivity: 'executing', unusedWebglAlpha: 0,
+        frost: { min: 0.13, max: 0.58, default: 0.294 }
+      };
+      // 生产设置窗口在文档加载前注入当前配置与已确认的任务栏视觉稿；浏览器直接
+      // 打开本文件时则使用这组安全演示默认值，便于单独设计验收。
+      const injected = window.__CodexTaskbarSettingsSnapshot || {};
+      const widthMin = Math.max(1, Number(injected.width_min) || 200);
+      const widthMax = Math.max(widthMin, Number(injected.width_max) || 620);
+      const primaryWorkWidth = Math.max(widthMax, Number(injected.primary_work_width) || 1920);
+      const secondaryWorkWidth = Math.max(0, Number(injected.secondary_work_width) || 0);
+      const hasSecondary = secondaryWorkWidth > 0;
+      const trafficLimitFor = display => {
+        const workWidth = display === 'secondary' && secondaryWorkWidth > 0 ? secondaryWorkWidth : primaryWorkWidth;
+        return Math.max(0, Math.floor(workWidth / 2));
+      };
+      const state = {
+        // 保存的是用户的目标偏好；副屏暂时离线时只在运行时回退主屏，不能把偏好覆盖掉。
+        display: injected.display === 'primary' ? 'primary' : 'secondary',
+        dock: injected.dock === 'left' ? 'left' : 'right',
+        width: Math.max(widthMin, Math.min(widthMax, Number(injected.width) || 420)),
+        traffic: Math.max(0, Number(injected.traffic) || 0),
+        opacity: Math.max(20, Math.min(100, Number(injected.opacity) || 64)),
+        logLevel: typeof injected.log_level === 'string' ? injected.log_level : 'debug',
+        reduceMotion: injected.reduce_motion === true,
+        syncMode: injected.sync_mode === 'economy' ? 'economy' : 'smart',
+        historyRetention: [30,90,365].includes(Number(injected.history_retention_days)) ? Number(injected.history_retention_days) : 90,
+        logRetention: [7,30,90].includes(Number(injected.log_retention_days)) ? Number(injected.log_retention_days) : 30,
+        adaptiveChunkDownload: injected.adaptive_chunk_download !== false,
+      };
+      const embeddedPreview = window.__CodexTaskbarPreviewDocument;
+      if (typeof embeddedPreview === 'string') $('taskbarFrame').srcdoc = embeddedPreview;
+      if (window.__CodexTaskbarSettingsEmbed) {
+        const close = document.createElement('button');
+        close.type = 'button'; close.className = 'chrome-close'; close.setAttribute('aria-label', '关闭设置'); close.textContent = '×';
+        close.addEventListener('click', () => window.chrome?.webview?.postMessage({action:'close-settings'}));
+        document.querySelector('.shell').append(close);
+        // 无框卡片不再有系统标题栏。顶部透明拖拽带承担移动，正文文字不再
+        // 充当标题栏；关闭按钮区域必须排除。
+        const shell = document.querySelector('.shell');
+        shell.addEventListener('pointerdown', event => {
+          const bounds=shell.getBoundingClientRect(),inTopBand=event.clientY-bounds.top<=26;
+          if (event.button !== 0 || !inTopBand || event.target.closest('button,input,select')) return;
+          event.preventDefault();
+          // 后续移动完全交给 Windows 原生标题栏移动循环，跨屏 DPI 与负坐标
+          // 不再由 WebView 的 CSS screenX/Y 换算。
+          window.chrome?.webview?.postMessage({action:'drag-settings',phase:'start',screen_x:Math.round(event.screenX),screen_y:Math.round(event.screenY)});
+        });
+      }
+      function render(message) {
+        state.width = Math.max(widthMin,Math.min(widthMax,Math.round(state.width)));
+        const trafficMax = trafficLimitFor(state.display);
+        state.traffic = Math.max(0,Math.min(trafficMax,Math.round(state.traffic)));
+        $('widthRange').min=String(widthMin); $('widthRange').max=String(widthMax); $('widthRange').value=String(state.width); $('widthOutput').textContent=`${state.width} px`;
+        $('trafficRange').min='0'; $('trafficRange').max=String(trafficMax); $('trafficRange').value=String(state.traffic); $('trafficOutput').textContent=`${state.traffic} px`;
+        $('opacityOutput').textContent = `${state.opacity}%`; $('dockOutput').textContent = state.dock === 'right' ? '靠右' : '靠左';
+        const frostAlpha = visualContract.frost.min + (100 - state.opacity) / 100 * (visualContract.frost.max - visualContract.frost.min), preview = $('taskbarPreview');
+        // 停靠方向是实际任务栏的位置设置；预览始终居中，便于单独检视胶囊本体。
+        // 设置窗口的 CSS 像素会被系统 DPI 放大，而任务栏配置保存的是物理像素。
+        // 预览尺寸先除以 DPR，才能与 Explorer 中的实际胶囊保持同样宽高。
+        const previewScale = Math.max(1, Number(window.devicePixelRatio) || 1);
+        preview.style.width = `${state.width / previewScale}px`;
+        preview.style.height = `${58 / previewScale}px`;
+        document.querySelectorAll('#taskbarFrame').forEach(frame => {frame.style.height='100%';frame.contentWindow?.postMessage({codexTaskbarPreviewWidth:state.width,codexTaskbarPreviewGlassAlpha:visualContract.unusedWebglAlpha,codexTaskbarPreviewFrost:frostAlpha,codexTaskbarPreviewScenario:visualContract.previewScenario,codexTaskbarPreviewActivity:visualContract.previewActivity}, '*');});
+        const effectiveDisplay = state.display === 'secondary' && hasSecondary ? '副屏' : '主屏';
+        $('previewPosition').textContent = `${effectiveDisplay} · 避让 ${state.traffic}px`; $('status').textContent = message || '已修改预览 · 尚未写入磁盘';
+      }
+      $('displayChoices').addEventListener('change', event => { state.display = event.target.value; document.querySelectorAll('.choice').forEach(x => x.classList.toggle('active', x.contains(event.target))); render(); });
+      $('dockSegment').addEventListener('click', event => { const button = event.target.closest('[data-dock]'); if (!button) return; state.dock = button.dataset.dock; document.querySelectorAll('[data-dock]').forEach(x => x.classList.toggle('active', x === button)); render(); });
+      $('widthRange').addEventListener('input',event=>{state.width=Number(event.target.value);render();});
+      $('trafficRange').addEventListener('input',event=>{state.traffic=Number(event.target.value);render();});
+      $('opacityRange').addEventListener('input', event => { state.opacity=Number(event.target.value); render(); });
+      $('restore').addEventListener('click', () => { const display='secondary';Object.assign(state,{display,dock:'right',width:420,traffic:0,opacity:64}); $('displayChoices').querySelector(`input[value="${display}"]`).checked = true; document.querySelectorAll('.choice').forEach(x => x.classList.toggle('active',x.querySelector('input').value === display)); document.querySelectorAll('[data-dock]').forEach(x => x.classList.toggle('active',x.dataset.dock === 'right')); $('opacityRange').value=64; render('已恢复默认预览 · 尚未写入磁盘'); });
+      function saveToHost(statusId) {
+        const payload = { action:'save-settings', settings:{ display:state.display, dock:state.dock, width:state.width, traffic:state.traffic, opacity:state.opacity, log_level:state.logLevel, reduce_motion:state.reduceMotion, sync_mode:state.syncMode, history_retention_days:state.historyRetention, log_retention_days:state.logRetention, adaptive_chunk_download:state.adaptiveChunkDownload } };
+        if (window.chrome?.webview) window.chrome.webview.postMessage(payload);
+        else $(statusId).textContent = '原型模式：已更新预览，桌面版会保存到本地设置';
+      }
+      $('apply').addEventListener('click', () => saveToHost('status'));
+      document.querySelectorAll('#taskbarFrame').forEach(frame => frame.addEventListener('load', () => render('已加载当前设置 · 未写入磁盘')));
+      window.addEventListener('resize', () => render());
+      document.querySelector('nav').addEventListener('click', event => {
+        const button = event.target.closest('[data-page-target]'); if (!button) return;
+        const page = button.dataset.pageTarget;
+        document.querySelectorAll('.settings-page').forEach(item => item.classList.toggle('active', item.dataset.page === page));
+        document.querySelectorAll('[data-page-target]').forEach(item => item.classList.toggle('active', item === button));
+        render(page === 'sync' ? '正在预览同步与记录 · 尚未写入磁盘' : page === 'diagnostics' ? '正在预览诊断与关于 · 尚未写入磁盘' : '正在预览任务栏布局 · 尚未写入磁盘');
+      });
+      $('syncMode').addEventListener('click', event => { const button = event.target.closest('[data-sync-mode]'); if (!button) return; state.syncMode = button.dataset.syncMode; document.querySelectorAll('[data-sync-mode]').forEach(item => item.classList.toggle('active', item === button)); $('syncStatus').textContent = `已选择${button.textContent.trim()}同步 · 尚未写入磁盘`; });
+      $('retention').addEventListener('click', event => { const button = event.target.closest('[data-retention]'); if (!button) return; state.historyRetention = Number(button.dataset.retention); document.querySelectorAll('[data-retention]').forEach(item => item.classList.toggle('active', item === button)); $('syncStatus').textContent = `已选择保留 ${button.dataset.retention} 天 · 尚未写入磁盘`; });
+      const sendAction = (action, statusId) => {
+        if (window.chrome?.webview) window.chrome.webview.postMessage({action});
+        else $(statusId).textContent = '浏览器原型模式不会执行本机动作';
+      };
+      $('manualRefresh').addEventListener('click', () => sendAction('manual-refresh', 'syncStatus'));
+      $('showHistory').addEventListener('click', () => sendAction('show-history', 'syncStatus'));
+      let clearHistoryArmed = false, clearHistoryTimer = 0;
+      $('clearHistory').addEventListener('click', event => {
+        if (!clearHistoryArmed) {
+          clearHistoryArmed = true;
+          event.currentTarget.textContent = '再次点击确认';
+          $('syncStatus').textContent = '只会删除本机聚合 Token 历史；请再次点击确认';
+          clearTimeout(clearHistoryTimer);
+          clearHistoryTimer = setTimeout(() => { clearHistoryArmed=false; event.currentTarget.textContent='清理记录'; }, 6000);
+          return;
+        }
+        clearHistoryArmed = false;
+        clearTimeout(clearHistoryTimer);
+        event.currentTarget.textContent = '清理记录';
+        sendAction('clear-history', 'syncStatus');
+      });
+      $('syncRestore').addEventListener('click', () => { document.querySelector('[data-sync-mode="smart"]').click(); document.querySelector('[data-retention="90"]').click(); $('syncStatus').textContent = '已恢复同步与记录默认值 · 尚未写入磁盘'; });
+      $('syncApply').addEventListener('click', () => saveToHost('syncStatus'));
+      $('checkUpdates').addEventListener('click', () => sendAction('check-updates', 'diagnosticStatus'));
+      $('downloadUpdate').addEventListener('click', () => sendAction('download-update', 'diagnosticStatus'));
+      $('chunkDownload').addEventListener('click', event => { const enabled = event.currentTarget.getAttribute('aria-pressed') !== 'true'; state.adaptiveChunkDownload = enabled; event.currentTarget.setAttribute('aria-pressed', String(enabled)); $('diagnosticStatus').textContent = enabled ? '已启用自适应分块下载 · 尚未写入磁盘' : '已改为单路下载 · 尚未写入磁盘'; });
+      $('logLevel').addEventListener('click', event => { const button = event.target.closest('[data-log-level]'); if (!button) return; state.logLevel = button.dataset.logLevel; document.querySelectorAll('[data-log-level]').forEach(item => item.classList.toggle('active', item === button)); $('diagnosticStatus').textContent = `已选择 ${button.textContent.trim()} 日志等级 · 尚未写入磁盘`; });
+      $('logRetention').addEventListener('click', event => { const button = event.target.closest('[data-log-retention]'); if (!button) return; state.logRetention = Number(button.dataset.logRetention); document.querySelectorAll('[data-log-retention]').forEach(item => item.classList.toggle('active', item === button)); $('diagnosticStatus').textContent = `已选择日志保留 ${button.dataset.logRetention} 天 · 尚未写入磁盘`; });
+      $('exportDiagnostics').addEventListener('click', () => sendAction('export-diagnostics', 'diagnosticStatus'));
+      $('diagnosticRestore').addEventListener('click', () => { document.querySelector('[data-log-level="debug"]').click(); document.querySelector('[data-log-retention="30"]').click(); const chunk = $('chunkDownload'); state.adaptiveChunkDownload = true; chunk.setAttribute('aria-pressed', 'true'); $('diagnosticStatus').textContent = '已恢复诊断与关于默认值 · 尚未写入磁盘'; });
+      $('diagnosticApply').addEventListener('click', () => saveToHost('diagnosticStatus'));
+      document.querySelectorAll('.buttons button').forEach(button => {
+        if (button.textContent.trim() === '关闭') button.addEventListener('click', () => {
+          if (window.chrome?.webview) window.chrome.webview.postMessage({action:'close-settings'});
+        });
+      });
+      window.chrome?.webview?.addEventListener('message', event => {
+        const result = event.data;
+        if (!result || result.kind !== 'settings-result') return;
+        const page = document.querySelector('.settings-page.active')?.dataset.page;
+        const status = page === 'sync' ? $('syncStatus') : page === 'diagnostics' ? $('diagnosticStatus') : $('status');
+        status.textContent = result.message;
+      });
+      $('displayChoices').querySelector(`input[value="${state.display}"]`).checked = true;
+      document.querySelectorAll('.choice').forEach(x => x.classList.toggle('active', x.querySelector('input').value === state.display));
+      document.querySelectorAll('[data-dock]').forEach(x => x.classList.toggle('active', x.dataset.dock === state.dock));
+      $('displayChoices').hidden=!hasSecondary;$('singleDisplayNote').hidden=hasSecondary;
+      $('widthRange').value = state.width; $('trafficRange').value = state.traffic; $('opacityRange').value = state.opacity;
+      document.querySelectorAll('[data-log-level]').forEach(x => x.classList.toggle('active', x.dataset.logLevel === state.logLevel));
+      document.querySelectorAll('[data-sync-mode]').forEach(x => x.classList.toggle('active', x.dataset.syncMode === state.syncMode));
+      document.querySelectorAll('[data-retention]').forEach(x => x.classList.toggle('active', Number(x.dataset.retention) === state.historyRetention));
+      document.querySelectorAll('[data-log-retention]').forEach(x => x.classList.toggle('active', Number(x.dataset.logRetention) === state.logRetention));
+      $('chunkDownload').setAttribute('aria-pressed', String(state.adaptiveChunkDownload));
+      render('已加载当前设置 · 未写入磁盘');
+    })();
+  </script>
+</body>
+</html>

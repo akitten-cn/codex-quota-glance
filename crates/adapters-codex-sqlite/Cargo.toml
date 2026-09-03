@@ -1,0 +1,11 @@
+[package]
+name = "codex-taskbar-adapters-codex-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+codex-taskbar-domain.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
