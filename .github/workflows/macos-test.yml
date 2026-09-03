@@ -34,7 +34,7 @@ jobs:
           app="$(cat dist/macos-app-path.txt)"
           "$app/Contents/MacOS/CodexTaskbar" --smoke-test
           test -f "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json"
-          cp "$CODEX_TASKBAR_DATA_DIR/macOS-smoke-results.json" dist/ 2>/dev/null || cp "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json" dist/
+          cp "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json" dist/
           cp "$CODEX_TASKBAR_DATA_DIR"/smoke-*.png dist/
       - name: Upload packages and smoke screenshots
         if: always()

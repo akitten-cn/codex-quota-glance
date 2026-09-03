@@ -626,7 +626,6 @@ fn run_loop(
     }
 }
 
-#[cfg(windows)]
 const fn fallback_poll_interval(settings: &AppConfig) -> Duration {
     match settings.sync_mode {
         SyncMode::Smart => FALLBACK_POLL_INTERVAL,
