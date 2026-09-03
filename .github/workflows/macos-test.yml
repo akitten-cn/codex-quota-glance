@@ -34,13 +34,14 @@ jobs:
           app="$(cat dist/macos-app-path.txt)"
           "$app/Contents/MacOS/CodexTaskbar" --smoke-test &
           host_pid=$!
+          (sleep 16; screencapture -x "$CODEX_TASKBAR_DATA_DIR/smoke-desktop.png" || true) &
           (sleep 45; sample "$host_pid" 1 -file dist/smoke-stack.txt || true) &
           diagnostic_pid=$!
           wait "$host_pid"
           kill "$diagnostic_pid" 2>/dev/null || true
           test -f "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json"
           cp "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json" dist/
-          cp "$CODEX_TASKBAR_DATA_DIR"/smoke-*.png dist/
+          cp "$CODEX_TASKBAR_DATA_DIR"/smoke-*.png dist/ 2>/dev/null || true
       - name: Upload packages and smoke screenshots
         if: always()
         uses: actions/upload-artifact@v4

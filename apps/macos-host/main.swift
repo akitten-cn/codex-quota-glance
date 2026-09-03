@@ -355,12 +355,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     @objc func quit() { NSApp.terminate(nil) }
     func alert(_ message: String) { if smoke { fputs(message + "\n", stderr); exit(1) }; let alert = NSAlert(); alert.messageText = message; alert.runModal() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if smoke { fputs("smoke: applicationShouldTerminate\n", stderr) }
         if quitting { return .terminateNow }; quitting = true; send(["action":"quit"])
         DispatchQueue.global().async {
             let deadline = Date().addingTimeInterval(3)
             while self.engine?.isRunning == true && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
             if self.engine?.isRunning == true { self.engine?.terminate() }
-            DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: true) }
+            DispatchQueue.main.async { if self.smoke { fputs("smoke: replying terminate\n", stderr) }; sender.reply(toApplicationShouldTerminate: true) }
         }
         return .terminateLater
     }
@@ -386,19 +387,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard let surface = surfaces["settings"] else { alert("smoke: 设置重开失败"); return }
         surface.web.evaluateJavaScript("({width:document.getElementById('widthRange').value,buttons:document.querySelectorAll('button').length,scroll:document.querySelector('.content').scrollHeight,client:document.querySelector('.content').clientHeight})") { result, error in
             guard error == nil, let result = result as? [String: Any], result["width"] as? String == "283" else { self.alert("smoke: 设置重开后未持久化"); return }
-            let group = DispatchGroup()
-            for (role, item) in self.surfaces {
-                group.enter()
-                item.web.takeSnapshot(with: nil) { image, error in
-                    if let image = image, let data = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: data), let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: self.dataRoot.appendingPathComponent("smoke-\(role).png")) }
-                    group.leave()
-                }
-            }
-            group.notify(queue: .main) {
-                let report: [String: Any] = ["ok":true,"settings_persisted":true,"engine_running":self.engine?.isRunning == true,"webviews":self.surfaces.count,"settings_layout":result]
-                try? json(report).write(to: self.dataRoot.appendingPathComponent("macos-smoke-results.json"), atomically: true, encoding: .utf8)
-                self.quit()
-            }
+            let report: [String: Any] = ["ok":true,"settings_persisted":true,"engine_running":self.engine?.isRunning == true,"webviews":self.surfaces.count,"settings_layout":result]
+            do { try json(report).write(to: self.dataRoot.appendingPathComponent("macos-smoke-results.json"), atomically: true, encoding: .utf8) }
+            catch { self.alert("smoke: 验收报告写入失败"); return }
+            fputs("smoke: settings persisted, requesting quit\n", stderr)
+            self.quit()
         }
     }
 }
