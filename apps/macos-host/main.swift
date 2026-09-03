@@ -66,6 +66,7 @@ final class Surface: NSObject, WKNavigationDelegate, WKUIDelegate {
         if role == "taskbar" {
             let glass = NSVisualEffectView(frame: web.frame)
             glass.material = .hudWindow; glass.blendingMode = .behindWindow; glass.state = .active
+            glass.appearance = NSAppearance(named: .vibrantLight)
             glass.autoresizingMask = [.width, .height]; container.addSubview(glass)
         }
         container.addSubview(web); panel.contentView = container
@@ -139,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/codex-taskbar-engine")
         process.arguments = ["--macos-bridge"]
         var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin") + ":/opt/homebrew/bin:/usr/local/bin:" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path
         if smoke {
             environment["CODEX_TASKBAR_SMOKE_TEST"] = "1"
             environment["CODEX_HOME"] = dataRoot.appendingPathComponent("empty-codex-home").path
@@ -262,7 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
     func applyVisualSettings() {
         let opacity = settings["opacity"] as? Double ?? 70
-        let frost = 0.13 + (opacity - 20) / 80 * 0.45
+        let frost = 0.13 + (100 - opacity) / 100 * 0.45
         surfaces["taskbar"]?.emit(["codexTaskbarPreviewWidth": settings["width"] ?? 440, "codexTaskbarPreviewFrost": frost])
         for surface in surfaces.values { surface.web.evaluateJavaScript("window.__macReduceMotion=\(settings["reduce_motion"] as? Bool == true ? "true" : "false");document.documentElement.classList.toggle('mac-reduce-motion',window.__macReduceMotion);", completionHandler: nil) }
     }
@@ -299,6 +301,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         var html = resource("settings-layout-reference.html").replacingOccurrences(of: "<html", with: "<html class=\"settings-embed\"").replacingOccurrences(of: "</head>", with: css + "</head>")
         html = html.replacingOccurrences(of: "任务栏布局", with: "浮窗布局").replacingOccurrences(of: "任务栏宽度", with: "浮窗宽度").replacingOccurrences(of: "任务栏避让", with: "边缘偏移").replacingOccurrences(of: "默认优先放在副屏，并避让通知区域与 TrafficMonitor。", with: "桌面浮动显示，可直接拖动胶囊；无副屏时自动使用主屏。")
         html = html.replacingOccurrences(of: "自动使用 Windows 系统代理 / PAC", with: "更新页面使用系统浏览器与本机网络设置")
+        // Mac 浮窗按逻辑点设置宽度；不能套用 Windows 的物理像素 / DPR 换算。
+        html = html.replacingOccurrences(of: "const previewScale = Math.max(1, Number(window.devicePixelRatio) || 1);", with: "const previewScale = 1;")
+            .replacingOccurrences(of: "58 / previewScale", with: "44 / previewScale")
+            .replacingOccurrences(of: " px", with: " pt")
         let surface = make("settings", size: size, html: html, bootstrap: bootstrap)
         surface.panel.setFrameOrigin(NSPoint(x: work.midX - size.width / 2, y: work.midY - size.height / 2))
     }

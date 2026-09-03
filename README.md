@@ -7,7 +7,7 @@ Codex 额度、Token 消耗与运行状态监视器。仓库沿用 `codex-quota-
 - `main`：当前版本及后续 Windows/macOS 共用代码的开发主线。
 - [`archive/electron-before-rust-20260903`](https://github.com/akitten-cn/codex-quota-glance/tree/archive/electron-before-rust-20260903)：旧 Electron 版本，保留旧主分支历史和迁移时本地未发布的修复。
 - Windows：当前支持任务栏胶囊、详情卡片、消耗弹窗与应用内设置页。
-- macOS：计划使用桌面浮动胶囊；**尚未完成平台宿主适配，不存在可用的 Mac 安装包**。当前不能直接将 Windows 程序复制到 Mac 运行。
+- macOS：`feature/macos-floating` 提供 AppKit/WKWebView 桌面浮动测试版，支持 arm64 与 Intel 分别构建。详情和设置属于同一个 `.app`；共享 Rust 引擎通过应用内部管道提供真实数据。仍需要用户实机验收，不能将 Windows EXE 复制到 Mac 运行。
 
 已有 GitHub Releases 仍为其各自版本的产物，不能据此判断当前主分支的实现。源码迁移不会发布新版本或更新已安装的软件。
 
@@ -35,6 +35,6 @@ cargo run --package codex-taskbar
 
 产物位于 `dist/`。配置、账本和日志默认保存在当前用户的应用数据目录；测试可以通过 `CODEX_TASKBAR_DATA_DIR` 指定独立目录。不要将认证凭据、数据库、运行日志或 WebView 缓存提交到仓库。
 
-推送 `main` 或提交 PR 时运行 Windows 检查；`release.yml` 可手动打包，只有推送版本标签才发布 Release。macOS 构建与验收将在平台适配完成后接入，不能把 Windows 检查通过当作 macOS 已验证。
+推送 `main` 或提交 PR 时运行 Windows 检查；`release.yml` 可手动打包，只有推送版本标签才发布 Release。`macos-test.yml` 在适配分支分别运行 Apple Silicon 与 Intel 测试、打包和真实 WKWebView 设置保存/重开冒烟。测试包只有临时签名，没有 Apple 公证，Mac 自动安装更新尚未开放；见 [Mac 测试说明](docs/macos-testing.md)。
 
 部分 `docs/` 文档是历史阶段记录，不代表所有描述仍是当前实现。迁移说明见 [仓库主线迁移](docs/repository-migration-20260903.md)。
