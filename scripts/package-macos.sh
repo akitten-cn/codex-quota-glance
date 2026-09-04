@@ -30,25 +30,32 @@ ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$name.zip"
 ln -s /Applications "$stage/Applications"
 mkdir -p "$stage/.background"
 cp "$assets/installer-background.png" "$stage/.background/"
-mount="$(mktemp -d "$PWD/dist/macos-mount.XXXXXX")"
+mount='/Volumes/Codex Taskbar'
+test ! -e "$mount" || { echo 'Installer volume already mounted; eject it before building' >&2; exit 1; }
 rw="$assets/installer-rw.dmg"
 hdiutil create -volname 'Codex Taskbar' -fs HFS+ -srcfolder "$stage" -format UDRW "$rw"
-hdiutil attach "$rw" -mountpoint "$mount" -nobrowse
+hdiutil attach "$rw" -nobrowse
 trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
 # hdiutil -srcfolder 不保留源目录的卷图标；必须写入已挂载的镜像。
 cp "$app/Contents/Resources/AppIcon.icns" "$mount/.VolumeIcon.icns"
-SetFile -a C "$mount"
+SetFile -c icnC "$mount/.VolumeIcon.icns"
 osascript scripts/macos-dmg-layout.applescript "$mount"
 test "$(readlink "$mount/Applications")" = /Applications
 test -s "$mount/.DS_Store"
 test -s "$mount/Codex Taskbar.app/Contents/Resources/AppIcon.icns"
 sleep 2
 screencapture -x "dist/smoke-installer-$arch.png"
+# 在 Finder 完成布局后最后写入卷图标与标志。
+cp "$app/Contents/Resources/AppIcon.icns" "$mount/.VolumeIcon.icns"
+SetFile -c icnC "$mount/.VolumeIcon.icns"
+SetFile -a C "$mount"
+test -s "$mount/.VolumeIcon.icns"
+sync
 hdiutil detach "$mount"
 trap - EXIT
 hdiutil convert "$rw" -format UDZO -o "dist/$name.dmg"
 # 校验最终只读镜像，防止只验证 staging 却遗漏最终打包内容。
-hdiutil attach "dist/$name.dmg" -mountpoint "$mount" -nobrowse -readonly
+hdiutil attach "dist/$name.dmg" -nobrowse -readonly
 trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
 ls -la "$mount"
 test "$(readlink "$mount/Applications")" = /Applications || { echo 'DMG Applications link invalid' >&2; exit 1; }
