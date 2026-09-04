@@ -30,12 +30,13 @@ ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$name.zip"
 ln -s /Applications "$stage/Applications"
 mkdir -p "$stage/.background"
 cp "$assets/installer-background.png" "$stage/.background/"
-cp "$app/Contents/Resources/AppIcon.icns" "$stage/.VolumeIcon.icns"
 mount="$(mktemp -d "$PWD/dist/macos-mount.XXXXXX")"
 rw="$assets/installer-rw.dmg"
 hdiutil create -volname 'Codex Taskbar' -fs HFS+ -srcfolder "$stage" -format UDRW "$rw"
 hdiutil attach "$rw" -mountpoint "$mount" -nobrowse
 trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+# hdiutil -srcfolder 不保留源目录的卷图标；必须写入已挂载的镜像。
+cp "$app/Contents/Resources/AppIcon.icns" "$mount/.VolumeIcon.icns"
 SetFile -a C "$mount"
 osascript scripts/macos-dmg-layout.applescript "$mount"
 test "$(readlink "$mount/Applications")" = /Applications
