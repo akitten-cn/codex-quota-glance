@@ -51,6 +51,20 @@ pub struct SessionTokenTailer {
 }
 
 impl SessionTokenTailer {
+    /// Mac 的桌面数据库未提供状态时，仅投影最新会话的事件类型与时间戳。
+    /// 不返回/记录 Prompt、消息正文、工具参数或会话标识。
+    #[cfg(any(target_os = "macos", test))]
+    pub fn activity(&self, now_ms: i64) -> Option<codex_taskbar_domain::activity::ActivityState> {
+        let mut file = open_shared_for_read(self.current_file.as_ref()?)?;
+        let length = file.metadata().ok()?.len();
+        let offset = length.saturating_sub(128 * 1024);
+        file.seek(SeekFrom::Start(offset)).ok()?;
+        let mut bytes = Vec::new();
+        file.take(128 * 1024).read_to_end(&mut bytes).ok()?;
+        let text = std::str::from_utf8(&bytes).ok()?;
+        let text = if offset > 0 { text.split_once('\n')?.1 } else { text };
+        session_activity(text, now_ms)
+    }
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -120,6 +134,68 @@ impl SessionTokenTailer {
         self.last_discovery.is_none_or(|instant| instant.elapsed() >= REDISCOVER_INTERVAL)
             || self.current_file.as_ref().is_some_and(|path| !path.is_file())
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn session_activity(text: &str, now_ms: i64) -> Option<codex_taskbar_domain::activity::ActivityState> {
+    use codex_taskbar_domain::activity::ActivityState as A;
+    let mut latest = None;
+    for line in text.split_inclusive('\n') {
+        // 不处理写到一半的 JSONL，避免尚未完成的行引起状态闪跳。
+        if !line.ends_with('\n') || line.len() > 65536 {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(ts) =
+            value.get("timestamp").and_then(Value::as_str).and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())
+        else {
+            continue;
+        };
+        let stamp = (ts.unix_timestamp_nanos() / 1_000_000) as i64;
+        if stamp > now_ms + 5000 {
+            continue;
+        }
+        let p = &value["payload"];
+        let state = match (value["type"].as_str(), p["type"].as_str()) {
+            (
+                Some("event_msg"),
+                Some("task_started" | "turn_started" | "agent_reasoning" | "exec_command_end" | "mcp_tool_call_end"),
+            ) => Some(A::Thinking),
+            (Some("event_msg"), Some("exec_command_begin" | "mcp_tool_call_begin" | "patch_apply_begin")) => {
+                Some(A::Executing)
+            }
+            (Some("event_msg"), Some("task_complete" | "task_completed" | "turn_complete" | "turn_completed")) => {
+                Some(A::Completed)
+            }
+            (Some("event_msg"), Some("turn_aborted" | "task_aborted")) => Some(A::Idle),
+            (Some("event_msg"), Some("task_failed" | "turn_failed")) => Some(A::Failed),
+            (
+                Some("event_msg"),
+                Some("exec_approval_request" | "apply_patch_approval_request" | "request_user_input"),
+            ) => Some(A::WaitingForUser),
+            (Some("response_item"), Some("function_call" | "custom_tool_call")) => {
+                Some(if p["name"].as_str().is_some_and(|n| n.ends_with("request_user_input")) {
+                    A::WaitingForUser
+                } else {
+                    A::Executing
+                })
+            }
+            (Some("response_item"), Some("function_call_output" | "custom_tool_call_output" | "reasoning")) => {
+                Some(A::Thinking)
+            }
+            _ => None,
+        };
+        if let Some(state) = state {
+            latest = Some((stamp, state));
+        }
+    }
+    let (stamp, state) = latest?;
+    // 结束事件短暂显示完成；缺少后续心跳时不能永远保持“执行中”。
+    Some(if now_ms - stamp > 15 * 60 * 1000 || (state == A::Completed && now_ms - stamp > 10000) {
+        A::Idle
+    } else {
+        state
+    })
 }
 
 fn session_files_for_day(root: &Path, day_key: i32) -> Vec<PathBuf> {
@@ -369,6 +445,32 @@ fn event_fingerprint(value: &Value, counts: &TokenCounts, model: Option<&str>) -
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn mac_activity_follows_lifecycle_not_token_totals() {
+        use codex_taskbar_domain::activity::ActivityState as A;
+        let event = |kind: &str| {
+            format!(
+                "{}\n",
+                serde_json::json!({"timestamp":"2026-09-04T00:00:00Z","type":"event_msg","payload":{"type":kind}})
+            )
+        };
+        let now = OffsetDateTime::parse("2026-09-04T00:00:01Z", &Rfc3339).unwrap().unix_timestamp() * 1000;
+        assert_eq!(session_activity(&event("task_started"), now), Some(A::Thinking));
+        assert_eq!(
+            session_activity(&format!("{}{}", event("task_started"), event("exec_command_begin")), now),
+            Some(A::Executing)
+        );
+        assert_eq!(
+            session_activity(&format!("{}{}", event("task_started"), event("task_complete")), now),
+            Some(A::Completed)
+        );
+        assert_eq!(session_activity(&event("task_complete"), now + 15000), Some(A::Idle));
+        assert_eq!(session_activity(&event("task_started"), now + 16 * 60 * 1000), Some(A::Idle));
+        assert_eq!(session_activity(&event("request_user_input"), now), Some(A::WaitingForUser));
+        assert_eq!(session_activity(&event("token_count"), now), None);
+        assert_eq!(session_activity(event("task_complete").trim_end(), now), None);
+    }
 
     #[test]
     fn parses_only_token_count_and_never_needs_message_text() {

@@ -3,6 +3,25 @@
 use super::*;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+#[path = "macos_connection.rs"]
+mod connection;
+
+fn connection_message(code: &str) -> &'static str {
+    match code {
+        "healthy" => "Codex 连接已建立",
+        "cli_not_found" => "未找到 Codex 程序；请打开已安装的 Codex/ChatGPT 后点刷新",
+        "cli_probe_failed" => "已发现 Codex，但启动验证失败或超时；请查看脱敏诊断",
+        "disconnected" => "Codex 连接中断，正在重试",
+        "degraded" => "Codex 连接已建立，但部分账号接口读取失败",
+        "smoke_isolated" => "隔离测试：未读取真实登录",
+        _ => "正在查找并连接本机 Codex",
+    }
+}
+
+fn publish_health(report: &Value) -> std::io::Result<()> {
+    let code = report["code"].as_str().unwrap_or("discovering");
+    send(json!({"kind":"health","code":code,"message":connection_message(code)}))
+}
 
 fn send(value: Value) -> std::io::Result<()> {
     let mut output = std::io::stdout().lock();
@@ -56,28 +75,19 @@ fn publish_state(
     coordinator: &MonitorCoordinator,
     settings: &AppConfig,
     ledger: &LocalUsageLedger,
+    health: &Value,
 ) -> std::io::Result<()> {
     let mut details = taskbar_host_details_with_settings(coordinator.state(), settings);
     apply_local_history_to_details(&mut details, ledger);
-    let details: Value =
+    let mut details: Value =
         serde_json::from_str(&codex_taskbar_platform_windows::web_snapshot::details_web_snapshot(&details))?;
+    let code = health["code"].as_str().unwrap_or("discovering");
+    if code != "healthy" {
+        details["status"] = json!(connection_message(code));
+    }
     send(
         json!({"kind":"state","taskbar":TaskbarSnapshot::from_monitor_state(coordinator.state()),"details":details,"settings":layout_settings(settings)}),
     )
-}
-
-fn mac_cli_candidates(home: &Path) -> Vec<PathBuf> {
-    let mut result = codex_path_candidates(std::env::var_os("PATH").as_deref());
-    // Finder 启动的 GUI 环境不继承交互 shell 的 PATH；每个候选仍由原定位器验证 app-server 能力。
-    result.extend([
-        PathBuf::from("/opt/homebrew/bin/codex"),
-        PathBuf::from("/usr/local/bin/codex"),
-        PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
-        home.join("Applications/Codex.app/Contents/Resources/codex"),
-        home.join(".local/bin/codex"),
-        home.join(".cargo/bin/codex"),
-    ]);
-    result
 }
 
 pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -97,7 +107,8 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut ledger = load_local_usage_ledger(&ledger_path);
     ledger.set_retention_days(usize::from(settings.history_retention_days));
     let mut coordinator = MonitorCoordinator::default();
-    publish_state(&coordinator, &settings, &ledger)?;
+    let mut health = json!({"code":"discovering"});
+    publish_state(&coordinator, &settings, &ledger, &health)?;
     let (command_tx, commands) = mpsc::channel::<Value>();
     std::thread::spawn(move || {
         // EOF 表示宿主关闭/崩溃，数据进程也应退出并保存，不留下后台孤儿。
@@ -114,30 +125,21 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = command_tx.send(json!({"action":"quit"}));
     });
     let smoke = std::env::var_os("CODEX_TASKBAR_SMOKE_TEST").is_some();
-    let located = CodexCliLocator::default().locate(&CodexCliLocatorInput::new(
-        if smoke { None } else { settings.codex_cli_path.clone().map(PathBuf::from) },
-        None,
-        if smoke { Vec::new() } else { mac_cli_candidates(&home) },
-    ));
-    let (session, updates) = match located {
-        Ok(cli) => {
-            let (s, u) = CodexSession::start_process(cli.transport_config(), CodexSessionConfig::default());
-            (Some(s), u)
-        }
-        Err(_) => {
-            send(
-                json!({"kind":"health","cli_available":false,"message":"未找到支持 app-server 的 Codex CLI。仍读取本机会话；安装 Codex CLI 后重新打开软件。"}),
-            )?;
-            let (_, rx) = mpsc::channel();
-            (None, rx)
-        }
-    };
+    let mut session: Option<CodexSession> = None;
+    let (_, mut updates) = mpsc::channel::<SessionUpdate>();
+    let mut discovery: Option<mpsc::Receiver<connection::Discovery>> = None;
+    let mut last_discovery = Instant::now() - Duration::from_secs(30);
+    if smoke {
+        health = json!({"code":"smoke_isolated"});
+    }
+    publish_health(&health)?;
     let mut tailer = SessionTokenTailer::new(codex_home.join("sessions"));
     let mut last_fallback = Instant::now() - FALLBACK_POLL_INTERVAL;
     let mut last_poll = Instant::now() - SESSION_TOKEN_POLL_INTERVAL;
     let mut last_flush = Instant::now();
     let mut last_publish = Instant::now();
     let mut healthy = false;
+    let mut sqlite_activity_available = false;
     let mut lease = AppServerActivityLease::default();
     let mut authoritative_day = None;
     let mut baseline = false;
@@ -150,8 +152,15 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 match command["action"].as_str().unwrap_or("") {
                     "quit" => return Ok(()),
                     "refresh-details" | "manual-refresh" => {
-                        if let Some(s) = &session {
+                        if let Some(s) = &session
+                            && healthy
+                        {
                             s.request_refresh();
+                        } else if discovery.is_none() {
+                            if let Some(s) = session.take() {
+                                s.stop();
+                            }
+                            last_discovery = Instant::now() - Duration::from_secs(30);
                         }
                         last_fallback = Instant::now() - ECONOMY_FALLBACK_POLL_INTERVAL;
                         dirty = true;
@@ -191,7 +200,7 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         )?;
                     }
                     "export-diagnostics" => {
-                        let report = json!({"platform":"macos","version":env!("CARGO_PKG_VERSION"),"cli_available":session.is_some(),"settings":layout_settings(&settings),"ledger_days":ledger.persisted().days.len()});
+                        let report = json!({"platform":"macos","version":env!("CARGO_PKG_VERSION"),"build":"2026-09-04-r2","cli_available":session.is_some(),"connection":health,"settings":layout_settings(&settings),"ledger_days":ledger.persisted().days.len()});
                         std::fs::write(root.join("diagnostics.json"), serde_json::to_vec_pretty(&report)?)?;
                         send(json!({"kind":"diagnostics-exported"}))?;
                     }
@@ -199,7 +208,48 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     _ => {}
                 }
             }
+            if !smoke && session.is_none() && discovery.is_none() && last_discovery.elapsed() >= Duration::from_secs(30)
+            {
+                let (tx, rx) = mpsc::channel();
+                let home = home.clone();
+                let codex_home = codex_home.clone();
+                let manual = settings
+                    .codex_cli_path
+                    .clone()
+                    .map(PathBuf::from)
+                    .or_else(|| std::env::var_os("CODEX_CLI_PATH").map(PathBuf::from));
+                std::thread::spawn(move || {
+                    let _ = tx.send(connection::discover(&home, &codex_home, manual));
+                });
+                discovery = Some(rx);
+                last_discovery = Instant::now();
+                health["code"] = json!("discovering");
+                publish_health(&health)?;
+                dirty = true;
+            }
+            if let Some(result) = discovery.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                discovery = None;
+                health = result.report;
+                last_discovery = Instant::now();
+                if let Some(config) = result.config {
+                    let (s, u) = CodexSession::start_process(config, CodexSessionConfig::default());
+                    session = Some(s);
+                    updates = u;
+                }
+                publish_health(&health)?;
+                dirty = true;
+            }
             for update in updates.try_iter() {
+                let code = match update.source_health {
+                    SourceHealth::Healthy => "healthy",
+                    SourceHealth::Degraded => "degraded",
+                    SourceHealth::Disconnected | SourceHealth::Stopped => "disconnected",
+                    SourceHealth::Starting => "connecting",
+                };
+                if health["code"].as_str() != Some(code) {
+                    health["code"] = json!(code);
+                    publish_health(&health)?;
+                }
                 if update.reset_account_scoped_state {
                     popup_tracker.reset();
                 }
@@ -215,7 +265,7 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if last_fallback.elapsed() >= fallback_poll_interval(&settings) {
                 // 每轮重新定位版本化数据库，支持 Codex 在监视器启动后创建/升级数据库。
                 let fallback = FallbackSources::discover(&codex_home);
-                apply_fallback(
+                let observation = apply_fallback(
                     &mut coordinator,
                     &fallback,
                     healthy,
@@ -223,6 +273,8 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     &mut ledger,
                     authoritative_day == Some(day),
                 );
+                sqlite_activity_available =
+                    observation.history_applied && observation.history_activity.is_some_and(is_concrete_activity);
                 last_fallback = Instant::now();
                 dirty = true;
             }
@@ -269,9 +321,20 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     baseline = true;
                     dirty = true;
                 }
+                if !lease.is_live() && !sqlite_activity_available {
+                    if let Some(activity) = tailer.activity(now_unix_ms()) {
+                        if coordinator.state().activity != activity {
+                            coordinator.apply(TelemetryUpdate::Activity {
+                                states: vec![activity],
+                                observed_at_unix_ms: now_unix_ms(),
+                            });
+                            dirty = true;
+                        }
+                    }
+                }
             }
             if dirty || last_publish.elapsed() >= Duration::from_secs(10) {
-                publish_state(&coordinator, &settings, &ledger)?;
+                publish_state(&coordinator, &settings, &ledger, &health)?;
                 last_publish = Instant::now();
             }
             if popup {
@@ -312,11 +375,5 @@ mod tests {
         payload["traffic"] = json!(0);
         payload["width"] = json!(199);
         assert!(updated_settings(&original, &payload).is_err());
-    }
-    #[test]
-    fn mac_gui_searches_bundled_and_homebrew_cli() {
-        let paths = mac_cli_candidates(Path::new("/Users/test"));
-        assert!(paths.contains(&PathBuf::from("/opt/homebrew/bin/codex")));
-        assert!(paths.contains(&PathBuf::from("/Applications/Codex.app/Contents/Resources/codex")));
     }
 }

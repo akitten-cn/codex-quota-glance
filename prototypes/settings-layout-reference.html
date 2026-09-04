@@ -103,6 +103,7 @@
       // 生产设置窗口在文档加载前注入当前配置与已确认的任务栏视觉稿；浏览器直接
       // 打开本文件时则使用这组安全演示默认值，便于单独设计验收。
       const injected = window.__CodexTaskbarSettingsSnapshot || {};
+      const macFloating = window.__CodexTaskbarMacFloating === true;
       const widthMin = Math.max(1, Number(injected.width_min) || 200);
       const widthMax = Math.max(widthMin, Number(injected.width_max) || 620);
       const primaryWorkWidth = Math.max(widthMax, Number(injected.primary_work_width) || 1920);
@@ -161,7 +162,7 @@
         preview.style.height = `${58 / previewScale}px`;
         document.querySelectorAll('#taskbarFrame').forEach(frame => {frame.style.height='100%';frame.contentWindow?.postMessage({codexTaskbarPreviewWidth:state.width,codexTaskbarPreviewGlassAlpha:visualContract.unusedWebglAlpha,codexTaskbarPreviewFrost:frostAlpha,codexTaskbarPreviewScenario:visualContract.previewScenario,codexTaskbarPreviewActivity:visualContract.previewActivity}, '*');});
         const effectiveDisplay = state.display === 'secondary' && hasSecondary ? '副屏' : '主屏';
-        $('previewPosition').textContent = `${effectiveDisplay} · 避让 ${state.traffic}px`; $('status').textContent = message || '已修改预览 · 尚未写入磁盘';
+        $('previewPosition').textContent = macFloating ? '自由拖动 · 自动记住位置' : `${effectiveDisplay} · 避让 ${state.traffic}px`; $('status').textContent = message || '已修改预览 · 尚未写入磁盘';
       }
       $('displayChoices').addEventListener('change', event => { state.display = event.target.value; document.querySelectorAll('.choice').forEach(x => x.classList.toggle('active', x.contains(event.target))); render(); });
       $('dockSegment').addEventListener('click', event => { const button = event.target.closest('[data-dock]'); if (!button) return; state.dock = button.dataset.dock; document.querySelectorAll('[data-dock]').forEach(x => x.classList.toggle('active', x === button)); render(); });
@@ -224,6 +225,13 @@
       });
       window.chrome?.webview?.addEventListener('message', event => {
         const result = event.data;
+        if (macFloating && result?.kind === 'health') {
+          document.querySelector('.sync-health strong').textContent = result.message || '正在检查 Codex 连接';
+          document.querySelector('.sync-health small').textContent = '账号与额度走本机 Codex 连接；Token 统计单独读取本机会话';
+          document.querySelector('.sync-health .freshness').textContent = result.code === 'healthy' ? '已连接' : '连接诊断';
+          $('diagnosticStatus').textContent = result.message || '正在检查 Codex 连接';
+          return;
+        }
         if (!result || result.kind !== 'settings-result') return;
         const page = document.querySelector('.settings-page.active')?.dataset.page;
         const status = page === 'sync' ? $('syncStatus') : page === 'diagnostics' ? $('diagnosticStatus') : $('status');
@@ -239,6 +247,17 @@
       document.querySelectorAll('[data-retention]').forEach(x => x.classList.toggle('active', Number(x.dataset.retention) === state.historyRetention));
       document.querySelectorAll('[data-log-retention]').forEach(x => x.classList.toggle('active', Number(x.dataset.logRetention) === state.logRetention));
       $('chunkDownload').setAttribute('aria-pressed', String(state.adaptiveChunkDownload));
+      if (macFloating) {
+        $('targetDisplaySection').hidden = true;
+        $('dockSegment').closest('.setting').hidden = true;
+        $('trafficRange').closest('.setting').hidden = true;
+        $('widthRange').closest('.section').querySelector('h3').textContent = '浮窗外观';
+        document.querySelector('[data-page="layout"] .content-head p').textContent = '直接拖动悬浮窗，自动保存最后位置；重启后恢复，屏幕断开时移回可见区域。';
+        document.querySelector('.sync-health strong').textContent = '正在检查 Codex 连接';
+        document.querySelector('.sync-health small').textContent = '连接结果由本机数据引擎提供';
+        document.querySelector('.version-card small').textContent = 'macOS · 桌面浮窗测试版';
+        document.querySelector('.version-card .channel').textContent = '测试版';
+      }
       render('已加载当前设置 · 未写入磁盘');
     })();
   </script>
