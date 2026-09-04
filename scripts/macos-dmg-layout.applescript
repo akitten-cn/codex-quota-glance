@@ -1,7 +1,7 @@
 on run argv
-    set volumeName to item 1 of argv
+    set mountedFolder to (POSIX file (item 1 of argv)) as alias
     tell application "Finder"
-        tell disk volumeName
+        tell folder (mountedFolder as text)
             open
             set current view of container window to icon view
             set toolbar visible of container window to false

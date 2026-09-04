@@ -33,11 +33,11 @@ cp "$assets/installer-background.png" "$stage/.background/"
 cp "$app/Contents/Resources/AppIcon.icns" "$stage/.VolumeIcon.icns"
 mount="$(mktemp -d "$PWD/dist/macos-mount.XXXXXX")"
 rw="$assets/installer-rw.dmg"
-hdiutil create -volname 'Codex Taskbar' -srcfolder "$stage" -format UDRW "$rw"
+hdiutil create -volname 'Codex Taskbar' -fs HFS+ -srcfolder "$stage" -format UDRW "$rw"
 hdiutil attach "$rw" -mountpoint "$mount" -nobrowse
 trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
 SetFile -a C "$mount"
-osascript scripts/macos-dmg-layout.applescript 'Codex Taskbar'
+osascript scripts/macos-dmg-layout.applescript "$mount"
 test "$(readlink "$mount/Applications")" = /Applications
 test -s "$mount/.DS_Store"
 test -s "$mount/Codex Taskbar.app/Contents/Resources/AppIcon.icns"
