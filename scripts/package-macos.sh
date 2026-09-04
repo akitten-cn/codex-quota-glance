@@ -49,9 +49,10 @@ hdiutil convert "$rw" -format UDZO -o "dist/$name.dmg"
 # 校验最终只读镜像，防止只验证 staging 却遗漏最终打包内容。
 hdiutil attach "dist/$name.dmg" -mountpoint "$mount" -nobrowse -readonly
 trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
-test "$(readlink "$mount/Applications")" = /Applications
-test -s "$mount/.DS_Store"
-test -s "$mount/.VolumeIcon.icns"
+ls -la "$mount"
+test "$(readlink "$mount/Applications")" = /Applications || { echo 'DMG Applications link invalid' >&2; exit 1; }
+test -s "$mount/.DS_Store" || { echo 'DMG Finder layout missing' >&2; exit 1; }
+test -s "$mount/.VolumeIcon.icns" || { echo 'DMG volume icon missing' >&2; exit 1; }
 codesign --verify --deep --strict "$mount/Codex Taskbar.app"
 hdiutil detach "$mount"
 trap - EXIT
