@@ -47,6 +47,7 @@ pub fn details_web_snapshot(details: &NativeHostDetails) -> String {
         "trend_points": trend,
         "trend_title": details.trend_title,
         "trend_series": trend_series,
+        "model_usage": details.model_usage,
         "footer": details.footer,
     })
     .to_string()

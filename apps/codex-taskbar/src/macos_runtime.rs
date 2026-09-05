@@ -282,6 +282,17 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 last_poll = Instant::now();
                 if let Some(batch) = tailer.poll(day, hour) {
                     if batch.bootstrap && !batch.events.is_empty() {
+                        ledger.replace_model_day(day);
+                    }
+                    for e in &batch.events {
+                        ledger.observe_model_event(
+                            day,
+                            e.model.as_deref(),
+                            &e.counts,
+                            official_api_equivalent_cost_micro_usd(&e.counts, e.model.as_deref()).map(|(cost, _)| cost),
+                        );
+                    }
+                    if batch.bootstrap && !batch.events.is_empty() {
                         ledger.replace_session_day_priced(
                             day,
                             batch.events.iter().map(|e| {

@@ -394,6 +394,7 @@ fn official_host_details(state: &MonitorState, settings: &AppConfig) -> NativeHo
         trend_points: Vec::new(),
         trend_title: String::new(),
         trend_series: Vec::new(),
+        model_usage: Vec::new(),
         api_cost_estimate: official_cost,
         footer: "余额为官方 Credits 原始单位，非美元；本轮预估仅在官方明确提供时展示，非订阅账单。".to_owned(),
         body: official_details_body(state),

@@ -511,6 +511,18 @@ fn run_loop(
                 let (day_key, hour) = codex_taskbar_platform_windows::local_usage_clock();
                 if let Some(batch) = tailer.poll(day_key, hour) {
                     if batch.bootstrap && !batch.events.is_empty() {
+                        local_usage_ledger.replace_model_day(day_key);
+                    }
+                    for event in &batch.events {
+                        local_usage_ledger.observe_model_event(
+                            day_key,
+                            event.model.as_deref(),
+                            &event.counts,
+                            official_api_equivalent_cost_micro_usd(&event.counts, event.model.as_deref())
+                                .map(|(cost, _)| cost),
+                        );
+                    }
+                    if batch.bootstrap && !batch.events.is_empty() {
                         local_usage_ledger.replace_session_day_priced(
                             day_key,
                             batch.events.iter().map(|event| {
@@ -1088,6 +1100,22 @@ fn publish(
 /// ID 放入 `NativeHostDetails`；没有任何有效日桶时宁可显示 `--` 和空曲线。
 fn apply_local_history_to_details(details: &mut NativeHostDetails, ledger: &LocalUsageLedger) {
     let (day_key, current_hour) = codex_taskbar_platform_windows::local_usage_clock();
+    details.model_usage = ledger
+        .today_models(day_key)
+        .into_iter()
+        .map(|(model, usage)| {
+            let cost = if usage.unpriced_tokens == usage.total_tokens {
+                "暂无法估算".to_owned()
+            } else {
+                format!(
+                    "${:.4}{}",
+                    usage.cost_micro_usd as f64 / 1_000_000.0,
+                    if usage.unpriced_tokens > 0 { "（部分）" } else { "" }
+                )
+            };
+            (model.to_owned(), usage.total_tokens.to_string(), cost)
+        })
+        .collect();
     let days = ledger.recent_days(14);
     let total = days.iter().fold(0_u64, |sum, day| sum.saturating_add(day.total_tokens));
     let today = ledger.today_hourly_tokens(day_key);

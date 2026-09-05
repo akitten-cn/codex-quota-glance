@@ -473,10 +473,23 @@ fn web_action_message(action: Option<&str>) -> Option<u32> {
 }
 
 fn create_webview_environment() -> std::result::Result<ICoreWebView2Environment, webview2_com::Error> {
+    // Never let WebView2 create an .exe.WebView2 directory beside a desktop executable.
+    let data_dir = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("CodexTaskbar")
+        .join("WebView2");
+    let data_dir = windows::core::HSTRING::from(data_dir.as_os_str());
     let (sender, receiver) = sync_channel(1);
     CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
-        Box::new(|handler| unsafe {
-            CreateCoreWebView2Environment(&handler).map_err(webview2_com::Error::WindowsError)
+        Box::new(move |handler| unsafe {
+            CreateCoreWebView2EnvironmentWithOptions(
+                windows::core::PCWSTR::null(),
+                &data_dir,
+                None::<&ICoreWebView2EnvironmentOptions>,
+                &handler,
+            )
+            .map_err(webview2_com::Error::WindowsError)
         }),
         Box::new(move |result, environment| {
             result?;

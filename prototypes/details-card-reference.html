@@ -148,6 +148,7 @@
           </div>
           <div class="reset-card"><span>重置卡</span><small id="voucherExpiry">--</small></div>
           <section class="side-section"><h3 class="side-title">账户信息</h3><div class="account-grid" id="accountGrid"><div><span>账户</span><strong>ak***@gmail.com</strong></div><div><span>订阅 / 认证</span><strong>Plus · ChatGPT OAuth</strong></div><div><span>数据源</span><strong>Codex 官方登录</strong></div><div><span>账户状态</span><strong>已验证</strong></div></div><div class="side-mini"><div><span>剩余余额</span><strong id="balance">12.50</strong></div><div class="voucher"><span>今日余额消耗</span><strong id="balanceSpend">--</strong></div></div></section>
+          <section class="data-card" id="modelUsageCard"><h3>今日模型用量</h3><p class="metric-foot">输入＋输出 · 美元 API 估算，非账单</p><div id="modelUsageRows">今日暂无模型用量</div></section>
         </aside>
         <section class="content">
           <div class="summary-grid">
@@ -169,6 +170,43 @@
       </div>
     </section>
   </main>
+  <script>
+    window.formatModelTokens = value => {
+      const count = Math.max(0, Number(value) || 0);
+      const units = [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
+      for (const [scale, suffix] of units) {
+        // Promote rounded 1000K/1000M to the next unit.
+        if (count >= scale || (scale > 1e3 && count >= scale * 0.99995)) {
+          return `${(count / scale).toFixed(1).replace(/\.0$/, '')}${suffix}`;
+        }
+      }
+      return String(Math.round(count));
+    };
+    window.renderModelUsage = rows => {
+      const target = document.getElementById('modelUsageRows');
+      target.replaceChildren();
+      if (!Array.isArray(rows) || !rows.length) { target.textContent = '今日暂无可归属模型的用量'; return; }
+      for (const [model, tokens, cost] of rows) {
+        const row = document.createElement('div');
+        row.className = 'model-usage-row';
+        for (const value of [model, `${window.formatModelTokens(tokens)} Token`, cost]) {
+          const cell = document.createElement('span'); cell.textContent = value; row.append(cell);
+        }
+        target.append(row);
+      }
+    };
+  </script>
+  <style>
+    html.details-embed .content { overflow-y:auto; }
+    html.details-embed aside { overflow-y:auto; }
+    .lower-grid { display:flex; flex-direction:column; }
+    #modelUsageCard { margin-top:14px; padding:12px; min-width:0; }
+    #modelUsageRows { max-height:160px; overflow:auto; margin-top:10px; font-size:12px; color:#24425a; }
+    .model-usage-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:5px 8px; padding:9px 0; border-bottom:1px solid rgba(100,150,180,.15); }
+    .model-usage-row span:first-child { grid-column:1/-1; overflow-wrap:anywhere; font-weight:600; }
+    .model-usage-row span:not(:first-child) { font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+    .model-usage-row span:last-child { text-align:right; }
+  </style>
   <script>
     (() => {
       // 此段仅服务独立设计稿。嵌入产品后所有数据都必须来自 Rust 快照；否则
@@ -213,7 +251,7 @@
       document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>selectMode(button.dataset.mode)));
       byId('chartCard')?.addEventListener('mousemove',event=>{if(!activePoints.length||!drawnPoints.length)return;const svg=byId('chart'),rect=svg.getBoundingClientRect();if(event.clientY<rect.top||event.clientY>rect.bottom)return hideHover();const x=Math.max(0,Math.min(rect.width,event.clientX-rect.left)),index=Math.round((x/Math.max(rect.width,1))*(activePoints.length-1)),drawn=drawnPoints[index],point=activePoints[index];byId('cursor').style.display='block';byId('point').style.display='block';byId('cursor').setAttribute('x1',drawn[0]);byId('cursor').setAttribute('x2',drawn[0]);byId('point').setAttribute('cx',drawn[0]);byId('point').setAttribute('cy',drawn[1]);const tip=byId('tooltip');tip.style.display='block';tip.textContent=`${point.label} · ${chartValue(activeSeries,Number(point.value)||0)}`;const cardRect=byId('chartCard').getBoundingClientRect();tip.style.left=`${Math.min(event.clientX-cardRect.left+12,cardRect.width-126)}px`;tip.style.top=`${Math.max(30,event.clientY-cardRect.top-34)}px`;});
       byId('chartCard')?.addEventListener('mouseleave',hideHover);
-      const apply=snapshot=>{if(snapshot?.schema_version!==1||snapshot?.kind!=='details')return;const metrics=Array.isArray(snapshot.metric_cards)?snapshot.metric_cards:[],five=metrics.find(card=>card.label==='5 小时'),week=metrics.find(card=>card.label==='Weekly');applyQuota('five',five);applyQuota('week',week);const primary=rowMap(snapshot.primary_rows),secondary=rowMap(snapshot.secondary_rows);text('sourceText',`${snapshot.status??'等待官方数据'} · ${snapshot.updated??'--'}`);text('todayTotal',snapshot.hero?.value);text('todaySub',snapshot.hero?.hint);text('input',secondary.get('今日输入')??secondary.get('最近输入')??secondary.get('本次输入')??'--');text('cached',secondary.get('今日缓存')??secondary.get('最近缓存输入')??secondary.get('本次缓存输入')??'--');text('output',secondary.get('今日输出')??secondary.get('最近输出')??secondary.get('本次输出')??'--');text('cacheHit',secondary.get('缓存命中')??secondary.get('最近缓存命中')??'--');text('estimate',snapshot.estimate??secondary.get('本轮预估')??'--');text('balanceSpend','--');text('balanceSpendSummary','--');text('historyTotal',secondary.get('本机历史消耗')??primary.get('本机历史消耗')??'--');text('balance',primary.get('余额')??'--');text('balanceState',primary.get('余额')??'--');text('voucherExpiry',primary.get('重置券')??'--');text('quotaState',five?.value&&week?.value?'双额度可用':week?.value?'仅 7 天额度':'等待额度');text('detailFoot',snapshot.footer);const grid=byId('accountGrid');if(grid){grid.replaceChildren();for(const row of (snapshot.primary_rows||[]).filter(row=>row.label!=='余额'&&row.label!=='重置券'&&row.label!=='本机历史消耗')){const item=document.createElement('div'),label=document.createElement('span'),value=document.createElement('strong');label.textContent=row.label;value.textContent=row.value;item.append(label,value);grid.append(item);}}const incoming=Array.isArray(snapshot.trend_series)?snapshot.trend_series:[];seriesById=new Map(incoming.map(series=>[series.id,series]));if(!seriesById.size)seriesById.set('history',{id:'history',title:snapshot.trend_title,unit:'仅此设备聚合记录',empty_message:'暂无可靠数据',points:snapshot.trend_points||[]});selectMode(activeMode);document.documentElement.classList.add('details-live');};
+      const apply=snapshot=>{if(snapshot?.schema_version!==1||snapshot?.kind!=='details')return;window.renderModelUsage(snapshot.model_usage);const metrics=Array.isArray(snapshot.metric_cards)?snapshot.metric_cards:[],five=metrics.find(card=>card.label==='5 小时'),week=metrics.find(card=>card.label==='Weekly');applyQuota('five',five);applyQuota('week',week);const primary=rowMap(snapshot.primary_rows),secondary=rowMap(snapshot.secondary_rows);text('sourceText',`${snapshot.status??'等待官方数据'} · ${snapshot.updated??'--'}`);text('todayTotal',snapshot.hero?.value);text('todaySub',snapshot.hero?.hint);text('input',secondary.get('今日输入')??secondary.get('最近输入')??secondary.get('本次输入')??'--');text('cached',secondary.get('今日缓存')??secondary.get('最近缓存输入')??secondary.get('本次缓存输入')??'--');text('output',secondary.get('今日输出')??secondary.get('最近输出')??secondary.get('本次输出')??'--');text('cacheHit',secondary.get('缓存命中')??secondary.get('最近缓存命中')??'--');text('estimate',snapshot.estimate??secondary.get('本轮预估')??'--');text('balanceSpend','--');text('balanceSpendSummary','--');text('historyTotal',secondary.get('本机历史消耗')??primary.get('本机历史消耗')??'--');text('balance',primary.get('余额')??'--');text('balanceState',primary.get('余额')??'--');text('voucherExpiry',primary.get('重置券')??'--');text('quotaState',five?.value&&week?.value?'双额度可用':week?.value?'仅 7 天额度':'等待额度');text('detailFoot',snapshot.footer);const grid=byId('accountGrid');if(grid){grid.replaceChildren();for(const row of (snapshot.primary_rows||[]).filter(row=>row.label!=='余额'&&row.label!=='重置券'&&row.label!=='本机历史消耗')){const item=document.createElement('div'),label=document.createElement('span'),value=document.createElement('strong');label.textContent=row.label;value.textContent=row.value;item.append(label,value);grid.append(item);}}const incoming=Array.isArray(snapshot.trend_series)?snapshot.trend_series:[];seriesById=new Map(incoming.map(series=>[series.id,series]));if(!seriesById.size)seriesById.set('history',{id:'history',title:snapshot.trend_title,unit:'仅此设备聚合记录',empty_message:'暂无可靠数据',points:snapshot.trend_points||[]});selectMode(activeMode);document.documentElement.classList.add('details-live');};
       const receiveDetails=event=>{
         apply(event.data);
         if(event.data?.kind!=='details'||event.data?.schema_version!==1)return;

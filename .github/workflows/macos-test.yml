@@ -1,6 +1,7 @@
 name: macOS floating test build
 
 on:
+  workflow_call:
   push:
     branches: [feature/macos-floating]
   workflow_dispatch:

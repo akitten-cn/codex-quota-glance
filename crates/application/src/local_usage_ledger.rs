@@ -60,6 +60,7 @@ pub struct PersistedUsageDay {
 /// 在内存中维护线程基线，在磁盘上只维护桶总计。
 #[derive(Debug)]
 pub struct LocalUsageLedger {
+    models: BTreeMap<(i32, String), ModelUsage>,
     baselines: BTreeMap<String, u64>,
     days: BTreeMap<i32, UsageDay>,
     dirty: bool,
@@ -68,8 +69,21 @@ pub struct LocalUsageLedger {
 
 impl Default for LocalUsageLedger {
     fn default() -> Self {
-        Self { baselines: BTreeMap::new(), days: BTreeMap::new(), dirty: false, retained_days: 90 }
+        Self {
+            models: BTreeMap::new(),
+            baselines: BTreeMap::new(),
+            days: BTreeMap::new(),
+            dirty: false,
+            retained_days: 90,
+        }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelUsage {
+    pub total_tokens: u64,
+    pub cost_micro_usd: u64,
+    pub unpriced_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +158,7 @@ impl LocalUsageLedger {
     /// 清空仅属于本应用的聚合历史，同时丢弃内存基线，避免清理后把旧累计误算为新增。
     /// 调用方应在用户明确二次确认后执行，并立即持久化空账本。
     pub fn clear(&mut self) {
+        self.models.clear();
         self.baselines.clear();
         self.days.clear();
         self.dirty = true;
@@ -187,7 +202,7 @@ impl LocalUsageLedger {
             let Some(first) = days.first_key_value().map(|(key, _)| *key) else { break };
             days.remove(&first);
         }
-        Self { baselines: BTreeMap::new(), days, dirty: false, retained_days: 90 }
+        Self { models: BTreeMap::new(), baselines: BTreeMap::new(), days, dirty: false, retained_days: 90 }
     }
 
     #[must_use]
@@ -281,7 +296,19 @@ impl LocalUsageLedger {
         }
         // 若数据库来自曾重复累计缓存的版本，下一次低频落盘会把修正值回写，
         // 不只是在这一轮 UI 中临时显示正确结果。
-        Ok(Self { baselines: BTreeMap::new(), days, dirty: repaired, retained_days: 90 })
+        let mut models = BTreeMap::new();
+        let mut statement = connection
+            .prepare("SELECT day_key,model,total_tokens,cost_micro_usd,unpriced_tokens FROM usage_model_daily")?;
+        for row in statement.query_map([], |row| {
+            Ok((
+                (row.get(0)?, row.get(1)?),
+                ModelUsage { total_tokens: row.get(2)?, cost_micro_usd: row.get(3)?, unpriced_tokens: row.get(4)? },
+            ))
+        })? {
+            let (key, value) = row?;
+            models.insert(key, value);
+        }
+        Ok(Self { models, baselines: BTreeMap::new(), days, dirty: repaired, retained_days: 90 })
     }
 
     /// 用一个事务替换关系型聚合桶。最多 365×24 行且仅按低频批次调用，避免
@@ -289,6 +316,13 @@ impl LocalUsageLedger {
     pub fn save_sqlite(&mut self, path: &std::path::Path) -> rusqlite::Result<()> {
         let mut connection = open_usage_database(path)?;
         let transaction = connection.transaction()?;
+        transaction.execute("DELETE FROM usage_model_daily", [])?;
+        for ((day, model), usage) in &self.models {
+            transaction.execute(
+                "INSERT INTO usage_model_daily VALUES(?1,?2,?3,?4,?5)",
+                params![day, model, usage.total_tokens, usage.cost_micro_usd, usage.unpriced_tokens],
+            )?;
+        }
         transaction.execute("DELETE FROM usage_hourly", [])?;
         transaction.execute("DELETE FROM usage_daily", [])?;
         for (&day_key, day) in &self.days {
@@ -392,6 +426,39 @@ impl LocalUsageLedger {
         self.days.get(&day_key).map(UsageDay::counts).filter(|counts| counts.display_total().is_some())
     }
 
+    /// Bootstrap replaces only this day's model buckets; repeated scans cannot double count.
+    pub fn replace_model_day(&mut self, day: i32) {
+        self.models.retain(|(key, _), _| *key != day);
+        self.dirty = true;
+    }
+
+    pub fn observe_model_event(&mut self, day: i32, model: Option<&str>, counts: &TokenCounts, cost: Option<u64>) {
+        let total = counts.display_total().unwrap_or(0);
+        if total == 0 {
+            return;
+        }
+        let model = model.map(str::trim).filter(|name| !name.is_empty()).unwrap_or("未识别模型");
+        let usage = self.models.entry((day, model.to_owned())).or_default();
+        usage.total_tokens = usage.total_tokens.saturating_add(total);
+        if let Some(cost) = cost {
+            usage.cost_micro_usd = usage.cost_micro_usd.saturating_add(cost);
+        } else {
+            usage.unpriced_tokens = usage.unpriced_tokens.saturating_add(total);
+        }
+        self.dirty = true;
+    }
+
+    pub fn today_models(&self, day: i32) -> Vec<(&str, &ModelUsage)> {
+        let mut rows: Vec<_> = self
+            .models
+            .iter()
+            .filter(|((key, _), usage)| *key == day && usage.total_tokens > 0)
+            .map(|((_, model), usage)| (model.as_str(), usage))
+            .collect();
+        rows.sort_by(|a, b| b.1.total_tokens.cmp(&a.1.total_tokens).then(a.0.cmp(b.0)));
+        rows
+    }
+
     #[must_use]
     pub fn today_hourly_tokens(&self, day_key: i32) -> [u64; 24] {
         self.days.get(&day_key).map_or([0; 24], |day| day.hourly_tokens)
@@ -459,6 +526,7 @@ impl LocalUsageLedger {
             let Some(first) = self.days.first_key_value().map(|(key, _)| *key) else { break };
             self.days.remove(&first);
         }
+        self.models.retain(|(day, _), _| self.days.contains_key(day));
     }
 }
 
@@ -468,6 +536,11 @@ fn open_usage_database(path: &std::path::Path) -> rusqlite::Result<Connection> {
     connection.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
+         CREATE TABLE IF NOT EXISTS usage_model_daily(
+           day_key INTEGER NOT NULL, model TEXT NOT NULL,
+           total_tokens INTEGER NOT NULL, cost_micro_usd INTEGER NOT NULL,
+           unpriced_tokens INTEGER NOT NULL, PRIMARY KEY(day_key,model)
+         );
          CREATE TABLE IF NOT EXISTS usage_daily(
            day_key INTEGER PRIMARY KEY,
            total_tokens INTEGER NOT NULL,
@@ -494,6 +567,35 @@ fn open_usage_database(path: &std::path::Path) -> rusqlite::Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_daily_usage_is_sparse_idempotent_and_persistent() {
+        let mut ledger = LocalUsageLedger::default();
+        let counts =
+            TokenCounts { input: Some(100), cached_input: Some(80), output: Some(20), ..TokenCounts::default() };
+        let day = 20260905;
+        ledger.observe_session_event(LocalUsageClock { day_key: day, hour: 1 }, &counts);
+        for _ in 0..2 {
+            ledger.replace_model_day(day);
+            ledger.observe_model_event(day, Some("gpt-6-astra"), &counts, Some(100));
+            ledger.observe_model_event(day, Some("unpriced"), &counts, None);
+        }
+        let rows = ledger.today_models(day);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1.total_tokens, 120); // cached input is already included
+        assert_eq!(rows[0].1.cost_micro_usd, 100);
+        assert_eq!(rows[1].1.unpriced_tokens, 120);
+        assert!(ledger.today_models(day + 1).is_empty());
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("codex-model-ledger-{nonce}.db"));
+        ledger.save_sqlite(&path).unwrap();
+        let mut restored = LocalUsageLedger::load_sqlite(&path).unwrap();
+        assert_eq!(ledger.today_models(day), restored.today_models(day));
+        restored.clear();
+        restored.save_sqlite(&path).unwrap();
+        assert!(LocalUsageLedger::load_sqlite(&path).unwrap().today_models(day).is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn counter(id: &str, tokens_used: u64) -> ThreadTokenCounter {
         ThreadTokenCounter { thread_id: id.to_owned(), tokens_used }

@@ -257,6 +257,7 @@ impl NativeTrendPoint {
 /// `body` 仅作为兼容/诊断文本保留，任务栏上方详情卡片优先使用其余结构化字段。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHostDetails {
+    pub model_usage: Vec<(String, String, String)>,
     pub title: String,
     pub badge: String,
     pub status: String,
@@ -337,6 +338,7 @@ impl Default for NativeHostDetails {
             trend_points: Vec::new(),
             trend_title: String::new(),
             trend_series: Vec::new(),
+            model_usage: Vec::new(),
             api_cost_estimate: None,
             footer: "单击任务栏组件查看详情".to_owned(),
             body: "正在读取官方额度与本机统计。".to_owned(),

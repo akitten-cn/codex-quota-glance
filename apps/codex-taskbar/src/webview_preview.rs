@@ -110,10 +110,22 @@ fn create_window() -> Result<HWND> {
 }
 
 fn create_environment() -> std::result::Result<ICoreWebView2Environment, webview2_com::Error> {
+    let data_dir = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("CodexTaskbar")
+        .join("WebView2");
+    let data_dir = windows::core::HSTRING::from(data_dir.as_os_str());
     let (sender, receiver) = mpsc::sync_channel(1);
     CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
-        Box::new(|handler| unsafe {
-            CreateCoreWebView2Environment(&handler).map_err(webview2_com::Error::WindowsError)
+        Box::new(move |handler| unsafe {
+            CreateCoreWebView2EnvironmentWithOptions(
+                windows::core::PCWSTR::null(),
+                &data_dir,
+                None::<&ICoreWebView2EnvironmentOptions>,
+                &handler,
+            )
+            .map_err(webview2_com::Error::WindowsError)
         }),
         Box::new(move |result, environment| {
             result?;
