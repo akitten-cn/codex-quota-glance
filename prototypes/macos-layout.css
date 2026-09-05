@@ -1,0 +1,43 @@
+/* Mac 使用 AppKit 逻辑点；Retina 倍率仅影响清晰度，不再次放大 UI。 */
+html.mac-layout { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif; }
+html.mac-layout.details-embed .detail-body { grid-template-columns:220px minmax(0,1fr); }
+html.mac-layout.details-embed aside { overflow:auto; }
+html.mac-layout.details-embed .content { overflow:auto; }
+html.mac-layout.details-embed .summary-grid { grid-template-columns:minmax(180px,53%) minmax(0,1fr)!important; }
+html.mac-layout.details-embed .quota-reset { white-space:normal; }
+html.mac-layout.details-embed .account-grid strong { overflow-wrap:anywhere; }
+html.mac-layout.details-embed .chart-card { min-height:174px; }
+html.mac-layout.details-embed .chart-top { color:#527187; }
+html.mac-layout.settings-embed .shell { grid-template-columns:180px minmax(0,1fr); }
+html.mac-layout.settings-embed aside { padding:28px 14px 16px; min-height:0; }
+html.mac-layout.settings-embed .brand { padding:0 5px 18px; }
+html.mac-layout.settings-embed .brand strong { font-size:21px; }
+html.mac-layout.settings-embed .nav-item { min-height:42px; padding:0 9px; font-size:12px; }
+html.mac-layout.settings-embed .content { padding:28px 22px 14px; overflow:hidden; }
+html.mac-layout.settings-embed .settings-page { min-height:0; height:100%; }
+html.mac-layout.settings-embed .mac-page-scroll { flex:1; min-height:0; overflow:auto; scrollbar-width:thin; padding:0 2px 12px; }
+html.mac-layout.settings-embed .actions { position:static; flex-shrink:0; margin-top:0; padding:12px 0 0; background:transparent; backdrop-filter:none; flex-wrap:wrap; }
+html.mac-layout.settings-embed .content-head h2 { font-size:22px; }
+html.mac-layout.settings-embed .content-head p { font-size:11px; }
+html.mac-layout.settings-embed .content-head { padding-right:24px; gap:8px; }
+html.mac-layout.settings-embed .page-tag { padding:6px 8px; }
+html.mac-layout.settings-embed .section { margin-top:16px; }
+html.mac-layout.settings-embed .preview { padding:14px; margin-top:15px; }
+html.mac-layout.settings-embed .side-foot { font-size:9px; }
+@media(max-width:740px) {
+  html.mac-layout.details-embed .detail-body { grid-template-columns:190px minmax(0,1fr); }
+  html.mac-layout.details-embed .summary-grid { grid-template-columns:minmax(145px,50%) minmax(0,1fr)!important; }
+  html.mac-layout.details-embed .primary-breakdown strong { font-size:12px; }
+  html.mac-layout.settings-embed .shell { grid-template-columns:150px minmax(0,1fr); }
+  html.mac-layout.settings-embed .content { padding:28px 14px 12px; }
+  html.mac-layout.settings-embed .brand span,html.mac-layout.settings-embed .side-foot { display:none; }
+}
+@media(max-width:600px) {
+  html.mac-layout.details-embed .detail-body { display:block; overflow:auto; }
+  html.mac-layout.details-embed aside { border-right:0; }
+  html.mac-layout.settings-embed .shell { grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr); }
+  html.mac-layout.settings-embed aside { padding:26px 12px 8px; }
+  html.mac-layout.settings-embed .brand { display:none; }
+  html.mac-layout.settings-embed nav { grid-template-columns:repeat(3,1fr); gap:2px; }
+  html.mac-layout.settings-embed .content { padding-top:8px; }
+}

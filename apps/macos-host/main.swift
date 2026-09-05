@@ -241,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             // 初始演示数据在窗口可见前被真实快照替换。
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { if surface.desiredVisible { surface.reveal(activate: role == "settings") } }
         }
-        let accessibleHTML = html.replacingOccurrences(of: "</head>", with: "<style>.mac-reduce-motion *,.mac-reduce-motion *::before,.mac-reduce-motion *::after{animation:none!important;transition:none!important}</style></head>")
+        let accessibleHTML = html.replacingOccurrences(of: "</head>", with: "<style>\(resource("macos-layout.css")) .mac-reduce-motion *,.mac-reduce-motion *::before,.mac-reduce-motion *::after{animation:none!important;transition:none!important}</style><script>document.documentElement.classList.add('mac-layout');document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('.settings-page').forEach(page=>{const scroller=document.createElement('div');scroller.className='mac-page-scroll';Array.from(page.children).filter(el=>!el.classList.contains('actions')).forEach(el=>scroller.append(el));page.prepend(scroller);});});</script></head>")
         surface.web.loadHTMLString(accessibleHTML, baseURL: Bundle.main.resourceURL)
         return surface
     }
@@ -254,6 +254,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             self.clamp(surface.panel)
             UserDefaults.standard.set(NSStringFromRect(surface.panel.frame), forKey: "floatingFrame")
         }
+    }
+    // visibleFrame 已是逻辑点。不能用 backingScaleFactor 或截图像素再次缩放。
+    func fittedSize(_ role: String, work: NSRect? = nil) -> NSSize {
+        let area = work ?? (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let preferred = role == "details" ? NSSize(width: 820, height: 550) : NSSize(width: 880, height: 640)
+        return NSSize(width: min(preferred.width, max(1, area.width - 32)),
+                      height: min(preferred.height, max(1, area.height - 48)))
     }
     func targetScreen() -> NSScreen? {
         if settings["display"] as? String == "secondary", NSScreen.screens.count > 1 { return NSScreen.screens[1] }
@@ -303,18 +311,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
     @objc func showDetails() {
         surfaces["popup"]?.hide()
-        if let existing = surfaces["details"] { existing.desiredVisible = true; anchored(existing); existing.reveal(); return }
+        if let existing = surfaces["details"] { existing.desiredVisible = true; existing.panel.setContentSize(fittedSize("details")); anchored(existing); existing.reveal(); return }
         let work = (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let size = NSSize(width: min(960, work.width - 30), height: min(720, work.height - 30))
+        let size = fittedSize("details", work: work)
         let html = resource("details-card-reference.html").replacingOccurrences(of: "<html", with: "<html class=\"details-embed\"")
         let surface = make("details", size: size, html: html)
         anchored(surface)
     }
     @objc func showSettings() {
         surfaces["popup"]?.hide(); surfaces["details"]?.hide()
-        if let existing = surfaces["settings"] { existing.desiredVisible = true; existing.panel.center(); clamp(existing.panel); existing.reveal(activate: true); return }
+        if let existing = surfaces["settings"] {
+            existing.desiredVisible = true; existing.panel.setContentSize(fittedSize("settings"))
+            let work = (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame
+            if let work = work { existing.panel.setFrameOrigin(NSPoint(x: work.midX - existing.panel.frame.width / 2, y: work.midY - existing.panel.frame.height / 2)) }
+            clamp(existing.panel); existing.reveal(activate: true); return
+        }
         let work = (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let size = NSSize(width: min(1040, work.width - 30), height: min(800, work.height - 30))
+        let size = fittedSize("settings", work: work)
         var snapshot = settings
         snapshot["primary_work_width"] = NSScreen.screens.first?.visibleFrame.width ?? 1440
         snapshot["secondary_work_width"] = NSScreen.screens.count > 1 ? NSScreen.screens[1].visibleFrame.width : 0
@@ -349,6 +362,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
     func screenChanged() {
         placeTaskbar()
+        for role in ["details", "settings"] {
+            surfaces[role]?.panel.setContentSize(fittedSize(role))
+        }
         for surface in surfaces.values { clamp(surface.panel) }
         // 重建时注入最新的屏幕范围，不保留上一块屏幕的滑块上限。
         if surfaces["settings"]?.panel.isVisible == true { closeSettings(); showSettings() }
@@ -422,6 +438,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func finishSmoke() {
         fputs("smoke: checking reopened settings\n", stderr)
         guard let surface = surfaces["settings"] else { alert("smoke: 设置重开失败"); return }
+        let layoutCheck = """
+        (()=>{let valid=true;for(const tab of document.querySelectorAll('[data-page-target]')){tab.click();const page=document.querySelector('.settings-page.active'),scroll=page.querySelector('.mac-page-scroll'),actions=page.querySelector('.actions');const a=actions.getBoundingClientRect(),s=scroll.getBoundingClientRect();valid=valid&&a.bottom<=innerHeight+1&&a.top>=s.bottom-1&&scroll.clientHeight>80&&scroll.scrollWidth<=scroll.clientWidth+1;}document.querySelector('[data-page-target="layout"]').click();return valid;})()
+        """
+        surface.web.evaluateJavaScript(layoutCheck) { result, error in
+            guard error == nil, result as? Bool == true else { self.alert("smoke: 设置页面滚动或底部按钮布局不完整"); return }
+            self.finishSmokeReport(surface)
+        }
+    }
+    func finishSmokeReport(_ surface: Surface) {
         surface.web.evaluateJavaScript("({width:document.getElementById('widthRange').value,buttons:document.querySelectorAll('button').length,scroll:document.querySelector('.content').scrollHeight,client:document.querySelector('.content').clientHeight,freePosition:document.getElementById('targetDisplaySection').hidden&&document.getElementById('dockSegment').closest('.setting').hidden&&document.getElementById('trafficRange').closest('.setting').hidden})") { result, error in
             guard error == nil, let result = result as? [String: Any], result["width"] as? String == "283" else { self.alert("smoke: 设置重开后未持久化"); return }
             let acceptsFirstMouse = self.surfaces.values.allSatisfy { $0.web.acceptsFirstMouse(for: nil) }
