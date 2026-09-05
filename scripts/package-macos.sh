@@ -27,7 +27,7 @@ codesign --force --sign - "$app/Contents/MacOS/codex-taskbar-engine"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
 plutil -lint "$app/Contents/Info.plist"
-name="codex-taskbar-macos-$arch-test"
+name="codex-taskbar-$version-macos-$arch"
 ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$name.zip"
 # Finder 拖放安装：链接指向用户自己的 /Applications，而非构建机目录。
 ln -s /Applications "$stage/Applications"
