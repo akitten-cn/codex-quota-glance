@@ -445,6 +445,16 @@ pub struct OfficialApiPricing {
 #[must_use]
 pub fn official_api_pricing(model: &str) -> Option<OfficialApiPricing> {
     match model.trim().to_ascii_lowercase().as_str() {
+        // https://developers.openai.com/api/docs/models/gpt-6-astra
+        // 2026-09-05 核实的 Standard 文本价格；不是订阅实际扣款。
+        "gpt-6-astra" => Some(OfficialApiPricing {
+            model: "gpt-6-astra",
+            input_micro_usd_per_million: 10_000_000,
+            cached_input_micro_usd_per_million: 1_000_000,
+            cache_write_input_micro_usd_per_million: Some(12_500_000),
+            output_micro_usd_per_million: 50_000_000,
+            long_context_threshold_tokens: Some(272_000),
+        }),
         "gpt-5" | "gpt-5-chat-latest" => Some(OfficialApiPricing {
             model: "gpt-5",
             input_micro_usd_per_million: 1_250_000,
@@ -1308,6 +1318,33 @@ mod tests {
             Some((9_200_000, "gpt-5.6-sol"))
         );
         assert_eq!(official_api_pricing("gpt-5.6").map(|pricing| pricing.model), Some("gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn gpt_6_astra_standard_cache_write_and_long_context_costs() {
+        let standard = TokenCounts {
+            input: Some(100_000),
+            cached_input: Some(40_000),
+            cache_write_input: Some(10_000),
+            output: Some(10_000),
+            ..TokenCounts::default()
+        };
+        // 50K 普通输入 + 40K 缓存读取 + 10K 缓存写入 + 10K 输出 = $1.165。
+        assert_eq!(
+            official_api_equivalent_cost_micro_usd(&standard, Some("gpt-6-astra")),
+            Some((1_165_000, "gpt-6-astra"))
+        );
+        let long = TokenCounts {
+            input: Some(1_000_000),
+            cached_input: Some(250_000),
+            output: Some(100_000),
+            ..TokenCounts::default()
+        };
+        assert_eq!(
+            official_api_equivalent_cost_micro_usd(&long, Some("gpt-6-astra")),
+            Some((23_000_000, "gpt-6-astra"))
+        );
+        assert_eq!(official_api_pricing("gpt-6"), None);
     }
 
     #[test]
