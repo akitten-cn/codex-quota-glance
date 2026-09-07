@@ -59,4 +59,4 @@ jobs:
             release-assets/codex-taskbar-*.zip \
             release-assets/codex-taskbar-*.dmg \
             release-assets/SHA256SUMS*.txt \
-            --notes-file docs/releases/0.2.3.md --verify-tag
+            --notes-file "docs/releases/${GITHUB_REF_NAME#v}.md" --verify-tag

@@ -461,7 +461,15 @@ impl LocalUsageLedger {
 
     #[must_use]
     pub fn today_hourly_tokens(&self, day_key: i32) -> [u64; 24] {
-        self.days.get(&day_key).map_or([0; 24], |day| day.hourly_tokens)
+        self.days.get(&day_key).map_or([0; 24], |day| {
+            let mut canonical = day.hourly_tokens;
+            for (hour, total) in canonical.iter_mut().enumerate() {
+                if day.hourly_input_tokens[hour] > 0 || day.hourly_output_tokens[hour] > 0 {
+                    *total = day.hourly_input_tokens[hour].saturating_add(day.hourly_output_tokens[hour]);
+                }
+            }
+            canonical
+        })
     }
 
     #[must_use]
@@ -724,6 +732,35 @@ mod tests {
         assert_eq!(restored.today_hourly_tokens(20260831)[9], 125);
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn trend_read_repairs_legacy_hourly_total_without_rewriting_database_first() {
+        let mut hourly_total = [0; 24];
+        let mut hourly_input = [0; 24];
+        let mut hourly_cached = [0; 24];
+        let mut hourly_output = [0; 24];
+        hourly_total[11] = 90_900_000;
+        hourly_input[11] = 45_500_000;
+        hourly_cached[11] = 43_300_000;
+        hourly_output[11] = 192_000;
+        let ledger = LocalUsageLedger::from_persisted(PersistedLocalUsageLedger {
+            version: LocalUsageLedger::VERSION,
+            days: vec![PersistedUsageDay {
+                day_key: 20260907,
+                total_tokens: 90_900_000,
+                hourly_tokens: hourly_total,
+                input_tokens: 45_500_000,
+                cached_input_tokens: 43_300_000,
+                output_tokens: 192_000,
+                hourly_input_tokens: hourly_input,
+                hourly_cached_input_tokens: hourly_cached,
+                hourly_output_tokens: hourly_output,
+                estimated_api_cost_micro_usd: 0,
+                hourly_estimated_api_cost_micro_usd: [0; 24],
+            }],
+        });
+        assert_eq!(ledger.today_hourly_tokens(20260907)[11], 45_692_000);
     }
 
     #[test]

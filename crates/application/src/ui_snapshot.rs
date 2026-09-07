@@ -134,7 +134,12 @@ impl TaskbarSnapshot {
         let credits = official.and_then(|snapshot| snapshot.credits.as_ref());
         let reset = official.and_then(|snapshot| snapshot.reset_credits.as_ref());
         let account = official.and_then(|snapshot| snapshot.account.as_ref());
-        let today = state.token_usage.today.clone();
+        // 展示协议绝不能透传数据源里的旧 total。部分历史版本曾把 cached_input
+        // 再加一次；只要输入/输出齐全，就在 UI 边界统一修正为 input + output。
+        let today = state.token_usage.today.clone().map(|mut counts| {
+            counts.total = counts.display_total();
+            counts
+        });
 
         Self {
             schema_version: TASKBAR_SNAPSHOT_SCHEMA_VERSION,
@@ -293,7 +298,25 @@ mod tests {
         state.token_usage.today_is_partial = true;
         let snapshot = TaskbarSnapshot::from_monitor_state(&state);
         assert_eq!(snapshot.usage.cache_hit_percent, Some(78));
+        assert_eq!(snapshot.usage.today.and_then(|counts| counts.total), Some(52_216));
         assert!(snapshot.usage.today_is_partial);
+    }
+
+    #[test]
+    fn taskbar_snapshot_repairs_double_counted_cached_input_total() {
+        let mut state = MonitorState::default();
+        state.token_usage.today = Some(TokenCounts {
+            input: Some(45_500_000),
+            cached_input: Some(43_300_000),
+            output: Some(192_000),
+            total: Some(88_992_000),
+            ..TokenCounts::default()
+        });
+        state.token_usage.today_source = UsageSource::SqliteFallback;
+        let snapshot = TaskbarSnapshot::from_monitor_state(&state);
+        let today = snapshot.usage.today.expect("应输出今日统计");
+        assert_eq!(today.total, Some(45_692_000));
+        assert_eq!(today.cached_input, Some(43_300_000));
     }
 
     #[test]

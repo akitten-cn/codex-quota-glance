@@ -19,6 +19,7 @@ SolidCompression=yes
 WizardStyle=modern
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\codex-taskbar.exe
+SetupIconFile=..\apps\codex-taskbar\app-icon.ico
 CloseApplications=yes
 RestartApplications=no
 
@@ -29,8 +30,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Source: "..\target\release\codex-taskbar.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Codex Taskbar"; Filename: "{app}\codex-taskbar.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Codex Taskbar"; Filename: "{app}\codex-taskbar.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Codex Taskbar"; Filename: "{app}\codex-taskbar.exe"; WorkingDir: "{app}"; IconFilename: "{app}\codex-taskbar.exe"; IconIndex: 0
+Name: "{autodesktop}\Codex Taskbar"; Filename: "{app}\codex-taskbar.exe"; WorkingDir: "{app}"; IconFilename: "{app}\codex-taskbar.exe"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\codex-taskbar.exe"; Description: "Launch Codex Taskbar"; Flags: nowait postinstall skipifsilent

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x2="0" y2="1"><stop stop-color="#142b42"/><stop offset="1" stop-color="#081426"/></linearGradient>
+    <linearGradient id="purple" x2="0" y2="1"><stop stop-color="#ab63ff"/><stop offset="1" stop-color="#4d21ba"/></linearGradient>
+    <linearGradient id="cyan" x2="0" y2="1"><stop stop-color="#4ceff2"/><stop offset="1" stop-color="#0087a3"/></linearGradient>
+    <clipPath id="capsule"><rect x="150" y="330" width="724" height="364" rx="182"/></clipPath>
+  </defs>
+  <rect x="72" y="72" width="880" height="880" rx="196" fill="url(#tile)"/>
+  <g clip-path="url(#capsule)">
+    <rect x="150" y="330" width="724" height="364" fill="#3b526e"/>
+    <path d="M120 294H650C535 449 760 589 650 724H120Z" fill="url(#purple)"/>
+    <path d="M120 294H438C322 449 550 589 438 724H120Z" fill="url(#cyan)"/>
+  </g>
+  <path d="M265 540H373L440 465L504 563L572 491H747" fill="none" stroke="#fff" stroke-opacity=".94" stroke-width="27" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
