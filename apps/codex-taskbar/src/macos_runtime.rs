@@ -77,7 +77,8 @@ fn publish_state(
     ledger: &LocalUsageLedger,
     health: &Value,
 ) -> std::io::Result<()> {
-    let mut details = taskbar_host_details_with_settings(coordinator.state(), settings);
+    let state = state_with_local_today(coordinator.state(), Some(ledger));
+    let mut details = taskbar_host_details_with_settings(&state, settings);
     apply_local_history_to_details(&mut details, ledger);
     let mut details: Value =
         serde_json::from_str(&codex_taskbar_platform_windows::web_snapshot::details_web_snapshot(&details))?;
@@ -86,7 +87,7 @@ fn publish_state(
         details["status"] = json!(connection_message(code));
     }
     send(
-        json!({"kind":"state","taskbar":TaskbarSnapshot::from_monitor_state(coordinator.state()),"details":details,"settings":layout_settings(settings)}),
+        json!({"kind":"state","taskbar":TaskbarSnapshot::from_monitor_state(&state),"details":details,"settings":layout_settings(settings)}),
     )
 }
 
@@ -99,13 +100,17 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join("Library/Application Support/CodexTaskbar"));
     let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".codex"));
+    let Some(_instance_guard) = codex_taskbar_application::single_instance::InstanceGuard::acquire(&root)? else {
+        return Ok(());
+    };
     let path = root.join("settings.json");
     let mut settings = AppConfig::load_or_create(&path)?;
     let (_guard, log_reload) = codex_taskbar_diagnostics::init_with_reload(&root.join("logs"), settings.log_level)?;
     let _ = codex_taskbar_diagnostics::prune_old_logs(&root.join("logs"), settings.log_retention_days);
     let ledger_path = local_usage_ledger_path(&path);
-    let mut ledger = load_local_usage_ledger(&ledger_path);
+    let mut ledger = load_local_usage_ledger(&ledger_path)?;
     ledger.set_retention_days(usize::from(settings.history_retention_days));
+    ledger.prune_at_day(codex_taskbar_platform_windows::local_usage_clock().0);
     let mut coordinator = MonitorCoordinator::default();
     let mut health = json!({"code":"discovering"});
     publish_state(&coordinator, &settings, &ledger, &health)?;
@@ -188,8 +193,12 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
                     "clear-history" => {
-                        ledger.clear();
-                        flush_local_usage_ledger(&ledger_path, &mut ledger);
+                        if ledger.clear_and_save(&ledger_path).is_err() {
+                            send(
+                                json!({"kind":"settings-result","ok":false,"message":"账本写入失败，原历史已保留，请稍后重试"}),
+                            )?;
+                            continue;
+                        }
                         coordinator.apply(TelemetryUpdate::LocalTodayUsage {
                             counts: None,
                             observed_at_unix_ms: now_unix_ms(),
@@ -262,6 +271,7 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 dirty = true;
             }
             let (day, hour) = codex_taskbar_platform_windows::local_usage_clock();
+            ledger.prune_at_day(day);
             if last_fallback.elapsed() >= fallback_poll_interval(&settings) {
                 // 每轮重新定位版本化数据库，支持 Codex 在监视器启动后创建/升级数据库。
                 let fallback = FallbackSources::discover(&codex_home);
@@ -280,39 +290,10 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             if last_poll.elapsed() >= SESSION_TOKEN_POLL_INTERVAL {
                 last_poll = Instant::now();
+                tailer.set_cleared_at_ms(ledger.cleared_at_ms());
                 if let Some(batch) = tailer.poll(day, hour) {
-                    if batch.bootstrap && !batch.events.is_empty() {
-                        ledger.replace_model_day(day);
-                    }
-                    for e in &batch.events {
-                        ledger.observe_model_event(
-                            day,
-                            e.model.as_deref(),
-                            &e.counts,
-                            official_api_equivalent_cost_micro_usd(&e.counts, e.model.as_deref()).map(|(cost, _)| cost),
-                        );
-                    }
-                    if batch.bootstrap && !batch.events.is_empty() {
-                        ledger.replace_session_day_priced(
-                            day,
-                            batch.events.iter().map(|e| {
-                                (
-                                    e.local_hour,
-                                    e.counts.clone(),
-                                    official_api_equivalent_cost_micro_usd(&e.counts, e.model.as_deref())
-                                        .map(|(c, _)| c),
-                                )
-                            }),
-                        );
+                    if apply_session_batch_to_ledger(&mut ledger, &batch, day) {
                         authoritative_day = Some(day);
-                    } else if !batch.bootstrap {
-                        for e in &batch.events {
-                            ledger.observe_session_event_priced(
-                                LocalUsageClock { day_key: day, hour: e.local_hour },
-                                &e.counts,
-                                official_api_equivalent_cost_micro_usd(&e.counts, e.model.as_deref()).map(|(c, _)| c),
-                            );
-                        }
                     }
                     if let Some(e) = batch.events.last() {
                         coordinator.apply(TelemetryUpdate::TokenUsage(Box::new(TokenUsageSnapshot {

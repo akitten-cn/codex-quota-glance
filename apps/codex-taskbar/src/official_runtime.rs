@@ -57,7 +57,7 @@ const ECONOMY_FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const LOCAL_LEDGER_FLUSH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const LEGACY_LOCAL_LEDGER_FILE_NAME: &str = "local-usage-ledger.json";
 const PREVIEW_LOOP_INTERVAL: Duration = Duration::from_millis(250);
-/// 旧胶囊版的 session Token 后备每秒最多读取一个活跃 JSONL 的尾部，不扫描正文，
+/// session Token 后备每秒读取已发现文件的新增完整行，仅提取 Token 与模型，
 /// 也绝不写入 Codex 目录。
 const SESSION_TOKEN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// App Server 的活动事件只在短时间内优先于桌面 SQLite；自启动的 service 不能
@@ -200,12 +200,14 @@ pub fn run(
                 }
             }
         })?;
-    let fallback = profile_dir.map(|profile| FallbackSources::discover(&profile.join(".codex")));
-    let mut session_token_tailer =
-        profile_dir.map(|profile| SessionTokenTailer::new(profile.join(".codex").join("sessions")));
+    let codex_home =
+        std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| profile_dir.map(|profile| profile.join(".codex")));
+    let fallback = codex_home.as_deref().map(FallbackSources::discover);
+    let mut session_token_tailer = codex_home.map(|home| SessionTokenTailer::new(home.join("sessions")));
     let ledger_path = local_usage_ledger_path(settings_path);
-    let mut local_usage_ledger = load_local_usage_ledger(&ledger_path);
+    let mut local_usage_ledger = load_local_usage_ledger(&ledger_path)?;
     local_usage_ledger.set_retention_days(usize::from(active_settings.history_retention_days));
+    local_usage_ledger.prune_at_day(codex_taskbar_platform_windows::local_usage_clock().0);
     let result = run_loop(
         &mut active_settings,
         settings_path,
@@ -427,11 +429,15 @@ fn run_loop(
     let mut last_session_token_poll =
         Instant::now().checked_sub(SESSION_TOKEN_POLL_INTERVAL).unwrap_or_else(Instant::now);
     let mut session_token_baseline_ready = false;
-    let mut session_today_authoritative = false;
+    let mut session_today_authoritative = None;
     let mut last_ledger_flush = Instant::now();
     let update_shutdown = Arc::new(AtomicBool::new(false));
     publish(host, coordinator, settings, *surface_size, Some(local_usage_ledger))?;
     loop {
+        local_usage_ledger.prune_at_day(codex_taskbar_platform_windows::local_usage_clock().0);
+        if std::fs::remove_file(settings_path.with_file_name("activate.request")).is_ok() {
+            let _ = host.show_details();
+        }
         match updates.recv_timeout(Duration::from_millis(250)) {
             Ok(RuntimeUpdate::Codex(update)) => {
                 // 仅记录协议通路是否得到各类正式数据，严禁记录账户、额度数值、
@@ -487,7 +493,7 @@ fn run_loop(
                     authoritative_healthy,
                     app_server_activity.is_live(),
                     local_usage_ledger,
-                    session_today_authoritative,
+                    session_today_authoritative == Some(codex_taskbar_platform_windows::local_usage_clock().0),
                 );
                 if !fallback_initial_observation_logged {
                     // 一次性、无敏感字段的运行自检。它只用于证明真正的用户环境
@@ -509,41 +515,10 @@ fn run_loop(
             last_session_token_poll = Instant::now();
             if let Some(tailer) = session_token_tailer.as_deref_mut() {
                 let (day_key, hour) = codex_taskbar_platform_windows::local_usage_clock();
+                tailer.set_cleared_at_ms(local_usage_ledger.cleared_at_ms());
                 if let Some(batch) = tailer.poll(day_key, hour) {
-                    if batch.bootstrap && !batch.events.is_empty() {
-                        local_usage_ledger.replace_model_day(day_key);
-                    }
-                    for event in &batch.events {
-                        local_usage_ledger.observe_model_event(
-                            day_key,
-                            event.model.as_deref(),
-                            &event.counts,
-                            official_api_equivalent_cost_micro_usd(&event.counts, event.model.as_deref())
-                                .map(|(cost, _)| cost),
-                        );
-                    }
-                    if batch.bootstrap && !batch.events.is_empty() {
-                        local_usage_ledger.replace_session_day_priced(
-                            day_key,
-                            batch.events.iter().map(|event| {
-                                (
-                                    event.local_hour,
-                                    event.counts.clone(),
-                                    official_api_equivalent_cost_micro_usd(&event.counts, event.model.as_deref())
-                                        .map(|(cost, _)| cost),
-                                )
-                            }),
-                        );
-                        session_today_authoritative = true;
-                    } else if !batch.bootstrap {
-                        for event in &batch.events {
-                            local_usage_ledger.observe_session_event_priced(
-                                LocalUsageClock { day_key, hour: event.local_hour },
-                                &event.counts,
-                                official_api_equivalent_cost_micro_usd(&event.counts, event.model.as_deref())
-                                    .map(|(cost, _)| cost),
-                            );
-                        }
+                    if apply_session_batch_to_ledger(local_usage_ledger, &batch, day_key) {
+                        session_today_authoritative = Some(day_key);
                     }
                     let Some(event) = batch.events.last() else {
                         session_token_baseline_ready = true;
@@ -664,38 +639,71 @@ fn show_consumption_popup(
 
 /// 聚合账本放在应用设置旁边，便于随设置目录整体备份或删除；文件本身不含线程
 /// 标识、Prompt、路径、凭据或 SQLite 正文。
+/// 启动仅重建当前日；跨午夜延迟写入的上一日事件按增量落入实际日期。
+fn apply_session_batch_to_ledger(
+    ledger: &mut LocalUsageLedger,
+    batch: &crate::session_token_fallback::SessionTokenBatch,
+    day: i32,
+) -> bool {
+    let total = batch
+        .events
+        .iter()
+        .filter(|event| event.local_day_key == day)
+        .fold(0_u64, |sum, event| sum.saturating_add(event.counts.display_total().unwrap_or(0)));
+    let mut days = std::collections::BTreeSet::new();
+    if batch.reset {
+        days.insert(day);
+    }
+    for event in &batch.events {
+        days.insert(event.local_day_key);
+    }
+    for key in days {
+        ledger.reconcile_session_batch_at(
+            key,
+            batch.reset && key == day,
+            batch.events.iter().filter(|event| event.local_day_key == key).map(|event| {
+                codex_taskbar_application::local_usage_ledger::SessionUsageEvent {
+                    hour: event.local_hour,
+                    counts: event.counts.clone(),
+                    cost: official_api_equivalent_cost_micro_usd(&event.counts, event.model.as_deref())
+                        .map(|(cost, _)| cost),
+                    model: event.model.clone(),
+                    historical: event.historical,
+                    occurred_at_unix_ms: Some(event.occurred_at_unix_ms),
+                }
+            }),
+        );
+    }
+    total > 0
+}
+
 fn local_usage_ledger_path(settings_path: &Path) -> PathBuf {
     settings_database_path(settings_path)
         .unwrap_or_else(|| settings_path.parent().unwrap_or_else(|| Path::new(".")).join("codex-taskbar.db"))
 }
 
-/// 读取旧账本失败时从空账本恢复，并记录不含路径/内容的错误类别。不能让一个
-/// 已损坏的历史文件阻止额度与活动状态监控启动。
-fn load_local_usage_ledger(path: &Path) -> LocalUsageLedger {
-    let mut ledger = match LocalUsageLedger::load_sqlite(path) {
-        Ok(ledger) => ledger,
-        Err(_) => {
-            tracing::warn!(event = "local_usage_database_read_failed", "本机 Token 数据库暂不可读，已从空账本恢复");
-            LocalUsageLedger::default()
-        }
-    };
-    if !ledger.persisted().days.is_empty() {
-        return ledger;
+/// 读取失败显式终止启动，禁止以空快照覆盖无法读取的历史。
+fn load_local_usage_ledger(path: &Path) -> Result<LocalUsageLedger, Box<dyn std::error::Error + Send + Sync>> {
+    let mut ledger = LocalUsageLedger::load_sqlite(path)?;
+    if ledger.migration_complete() {
+        return Ok(ledger);
     }
-
-    // 首次升级时导入旧 JSON 聚合账本。导入会按 input+output 重算所有具备明细
-    // 的日/小时总量，自动清除历史版本可能写入的缓存重复值。
-    let legacy = path.parent().unwrap_or_else(|| Path::new(".")).join(LEGACY_LOCAL_LEDGER_FILE_NAME);
-    if let Ok(bytes) = std::fs::read(&legacy)
-        && let Ok(persisted) = serde_json::from_slice::<PersistedLocalUsageLedger>(&bytes)
-        && (1..=LocalUsageLedger::VERSION).contains(&persisted.version)
-    {
-        ledger = LocalUsageLedger::from_persisted(persisted);
-        if ledger.save_sqlite(path).is_ok() {
-            tracing::info!(event = "local_usage_ledger_migrated", "旧本机 Token 聚合账本已迁移到 SQLite");
+    if ledger.persisted().days.is_empty() {
+        let legacy = path.parent().unwrap_or_else(|| Path::new(".")).join(LEGACY_LOCAL_LEDGER_FILE_NAME);
+        match std::fs::read(&legacy) {
+            Ok(bytes) => {
+                let persisted: PersistedLocalUsageLedger = serde_json::from_slice(&bytes)?;
+                if !(1..=LocalUsageLedger::VERSION).contains(&persisted.version) {
+                    return Err(std::io::Error::other("旧账本版本不受支持，停止迁移").into());
+                }
+                ledger = LocalUsageLedger::from_persisted(persisted);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
     }
-    ledger
+    ledger.save_sqlite(path)?;
+    Ok(ledger)
 }
 
 /// 将聚合日/小时桶写入 SQLite 事务。调用方负责 5 分钟节流；失败时保留 dirty
@@ -751,8 +759,14 @@ fn process_settings_actions(
             }
             SettingsAction::ClearHistory => {
                 if let (Some(ledger), Some(path)) = (ledger.as_deref_mut(), ledger_path) {
-                    ledger.clear();
-                    flush_local_usage_ledger(path, ledger);
+                    if ledger.clear_and_save(path).is_err() {
+                        let _ = host.show_notification(NativeNotification::new(
+                            "清理未完成",
+                            "账本写入失败，原历史已保留，请稍后重试。",
+                            NativeNotificationKind::Info,
+                        ));
+                        continue;
+                    }
                     let _ = host.show_notification(NativeNotification::new(
                         "本机历史已清理",
                         "只删除了 Codex Taskbar 的聚合 Token 记录。",
@@ -1031,6 +1045,8 @@ fn apply_session_update(coordinator: &mut MonitorCoordinator, update: SessionUpd
     coordinator.apply(TelemetryUpdate::Official(Box::new(update.official)));
     if quota_live {
         coordinator.apply(TelemetryUpdate::RateLimits(update.quota));
+    } else {
+        coordinator.apply(TelemetryUpdate::RateLimitsUnavailable);
     }
     if let Some(activity) = update.activity.filter(|activity| is_concrete_activity(activity.state)) {
         coordinator
@@ -1084,16 +1100,28 @@ fn publish(
     surface_size: (f32, f32),
     local_usage_ledger: Option<&LocalUsageLedger>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut model = taskbar_host_model(coordinator.state(), settings, surface_size.0, surface_size.1);
+    let state = state_with_local_today(coordinator.state(), local_usage_ledger);
+    let mut model = taskbar_host_model(&state, settings, surface_size.0, surface_size.1);
     model.reduce_motion = settings.reduce_motion;
     host.update_model(model)?;
-    let mut details = taskbar_host_details_with_settings(coordinator.state(), settings);
+    let mut details = taskbar_host_details_with_settings(&state, settings);
     if let Some(ledger) = local_usage_ledger {
         apply_local_history_to_details(&mut details, ledger);
     }
     host.update_details(details)?;
-    host.update_web_taskbar_snapshot(taskbar_snapshot_json(coordinator.state())?)?;
+    host.update_web_taskbar_snapshot(taskbar_snapshot_json(&state)?)?;
     Ok(())
+}
+
+fn state_with_local_today(state: &MonitorState, ledger: Option<&LocalUsageLedger>) -> MonitorState {
+    let mut state = state.clone();
+    if let Some(ledger) = ledger {
+        // 启动及账户通知可清空内存统计，而本机日账本仍然有效。所有展示面统一
+        // 使用当前日期的账本补充；官方实时日聚合仍由状态仲裁优先保留。
+        let (day_key, _) = codex_taskbar_platform_windows::local_usage_clock();
+        state.apply_local_today_usage(ledger.today_counts(day_key), state.token_usage.observed_at_unix_ms);
+    }
+    state
 }
 
 /// 将已经聚合完成的本机日桶接到详情卡。该过程不读取原始会话，也不把线程
@@ -1117,7 +1145,7 @@ fn apply_local_history_to_details(details: &mut NativeHostDetails, ledger: &Loca
         })
         .collect();
     let days = ledger.recent_days(14);
-    let total = days.iter().fold(0_u64, |sum, day| sum.saturating_add(day.total_tokens));
+    let total = ledger.recent_days(365).iter().fold(0_u64, |sum, day| sum.saturating_add(day.total_tokens));
     let today = ledger.today_hourly_tokens(day_key);
     let today_cost = ledger.today_hourly_estimated_api_cost_micro_usd(day_key);
     let today_points = today
@@ -1213,6 +1241,7 @@ fn taskbar_snapshot_json(state: &MonitorState) -> Result<String, serde_json::Err
 }
 
 struct FallbackSources {
+    root: PathBuf,
     state: CodexSqliteFallback,
     history: CodexSqliteFallback,
 }
@@ -1229,6 +1258,7 @@ struct FallbackObservation {
 impl FallbackSources {
     fn discover(codex_home: &Path) -> Self {
         Self {
+            root: codex_home.to_path_buf(),
             state: CodexSqliteFallback::new(SqliteFallbackConfig::new(newest_versioned_db(codex_home, "state_"))),
             history: CodexSqliteFallback::new(SqliteFallbackConfig::new(newest_versioned_db(
                 codex_home,
@@ -1246,10 +1276,18 @@ fn apply_fallback(
     local_usage_ledger: &mut LocalUsageLedger,
     session_today_authoritative: bool,
 ) -> FallbackObservation {
+    let sources = FallbackSources::discover(&sources.root);
     let state = sources.state.read_snapshot();
     let state_snapshot_available = state.snapshot.is_some();
-    if !session_today_authoritative && let Some(snapshot) = state.snapshot.as_ref() {
-        apply_local_today_usage(coordinator, local_usage_ledger, snapshot);
+    if let Some(snapshot) = state.snapshot.as_ref() {
+        if session_today_authoritative {
+            local_usage_ledger.refresh_baselines(snapshot.thread_token_totals.iter().map(|total| ThreadTokenCounter {
+                thread_id: total.thread_id.clone(),
+                tokens_used: total.tokens_used,
+            }));
+        } else {
+            apply_local_today_usage(coordinator, local_usage_ledger, snapshot);
+        }
     }
     let has_live_usage = authoritative_healthy
         && coordinator.state().token_usage.current_thread.as_ref().and_then(TokenCounts::display_total).is_some();
@@ -1291,12 +1329,13 @@ fn apply_local_today_usage(
     snapshot: &FallbackSnapshot,
 ) {
     let (day_key, hour) = codex_taskbar_platform_windows::local_usage_clock();
-    let changed = ledger.observe(
+    let changed = ledger.observe_at(
         LocalUsageClock { day_key, hour },
         snapshot
             .thread_token_totals
             .iter()
             .map(|total| ThreadTokenCounter { thread_id: total.thread_id.clone(), tokens_used: total.tokens_used }),
+        snapshot.observed_at_unix_ms,
     );
     // 首帧没有正向增量时也同步一次 `None`，确保旧窗口不会将上一次运行的
     // 本机数值误当作今天。后续只在累计变化时发出 UI 更新，避免 5 秒轮询抖动。
@@ -1459,7 +1498,7 @@ mod tests {
             ledger.observe(clock, [ThreadTokenCounter { thread_id: "private-thread-id".to_owned(), tokens_used: 120 }])
         );
         flush_local_usage_ledger(&path, &mut ledger);
-        let restored = load_local_usage_ledger(&path);
+        let restored = load_local_usage_ledger(&path).unwrap();
         assert_eq!(restored.today_counts(clock.day_key).and_then(|counts| counts.total), Some(20));
         let _ = std::fs::remove_dir_all(&temporary_root);
     }
@@ -1484,6 +1523,30 @@ mod tests {
         assert!(cost.points.iter().any(|point| point.value == 248_000));
         assert!(details.secondary_rows.iter().any(|row| row.label == "今日 API 等价估算"));
     }
+
+    #[test]
+    fn published_today_recovers_after_account_reset_without_new_consumption() {
+        let (day_key, hour) = codex_taskbar_platform_windows::local_usage_clock();
+        let mut ledger = LocalUsageLedger::default();
+        let counts = TokenCounts { input: Some(100), output: Some(20), ..TokenCounts::default() };
+        ledger.replace_session_day(day_key, [(hour, counts.clone())]);
+        let mut state = MonitorState::default();
+        state.apply_local_today_usage(Some(counts), 100);
+        state.reset_account_scoped_state();
+        let restored = state_with_local_today(&state, Some(&ledger));
+        let details = taskbar_host_details_with_settings(&restored, &AppConfig::default());
+        assert_eq!(details.hero_value, "120");
+        assert_eq!(restored.token_usage.today.as_ref().and_then(TokenCounts::display_total), Some(120));
+
+        state.token_usage.today = Some(TokenCounts { total: Some(999), ..TokenCounts::default() });
+        state.token_usage.today_source = UsageSource::AppServer;
+        state.token_usage.fresh = true;
+        let official = state_with_local_today(&state, Some(&ledger));
+        assert_eq!(official.token_usage.today.and_then(|counts| counts.display_total()), Some(999));
+
+        let empty = state_with_local_today(&restored, Some(&LocalUsageLedger::default()));
+        assert!(empty.token_usage.today.is_none());
+    }
 }
 
 #[cfg(not(windows))]
@@ -1495,4 +1558,506 @@ pub fn run(
     _local_app_data: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Err(Box::new(codex_taskbar_platform_windows::PlatformError::UnsupportedPlatform))
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    fn review_fixture(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("taskbar-runtime-{name}-{}-{}", std::process::id(), now_unix_ms()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn review_clear_does_not_reimport_legacy_and_persists_cutoff() {
+        let root = review_fixture("migration");
+        let path = root.join("ledger.sqlite");
+        let mut original = LocalUsageLedger::default();
+        original.replace_session_day(20260922, [(12, TokenCounts { total: Some(100), ..Default::default() })]);
+        std::fs::write(root.join(LEGACY_LOCAL_LEDGER_FILE_NAME), serde_json::to_vec(&original.persisted()).unwrap())
+            .unwrap();
+        let mut ledger = load_local_usage_ledger(&path).unwrap();
+        assert_eq!(ledger.today_counts(20260922).unwrap().total, Some(100));
+        ledger.clear();
+        ledger.save_sqlite(&path).unwrap();
+        let restored = load_local_usage_ledger(&path).unwrap();
+        assert!(restored.persisted().days.is_empty());
+        assert!(restored.cleared_at_ms() > 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn review_unreadable_ledger_never_becomes_a_writable_empty_ledger() {
+        let root = review_fixture("unreadable");
+        let path = root.join("ledger.sqlite");
+        std::fs::write(&path, b"unreadable synthetic database").unwrap();
+        assert!(load_local_usage_ledger(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"unreadable synthetic database");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn review_bootstrap_cannot_reduce_existing_history_or_model_buckets() {
+        use crate::session_token_fallback::{SessionTokenBatch, SessionTokenEvent};
+        let mut ledger = LocalUsageLedger::default();
+        let counts = TokenCounts { total: Some(300), ..Default::default() };
+        ledger.replace_session_day(20260922, [(12, counts.clone())]);
+        ledger.observe_model_event(20260922, Some("known"), &counts, None);
+        let batch = SessionTokenBatch {
+            reset: true,
+            bootstrap: true,
+            events: vec![SessionTokenEvent {
+                occurred_at_unix_ms: 0,
+                historical: true,
+                counts: TokenCounts { total: Some(100), ..Default::default() },
+                model: None,
+                local_day_key: 20260922,
+                local_hour: 12,
+            }],
+        };
+        assert!(apply_session_batch_to_ledger(&mut ledger, &batch, 20260922));
+        assert_eq!(ledger.today_counts(20260922).unwrap().total, Some(300));
+        assert_eq!(ledger.today_models(20260922)[0].0, "known");
+    }
+
+    #[test]
+    fn review_history_total_covers_more_than_chart_window() {
+        let mut ledger = LocalUsageLedger::default();
+        for day in 1..=20 {
+            ledger.replace_session_day(20260900 + day, [(12, TokenCounts { total: Some(100), ..Default::default() })]);
+        }
+        let mut details = taskbar_host_details_with_settings(&MonitorState::default(), &AppConfig::default());
+        apply_local_history_to_details(&mut details, &ledger);
+        assert!(
+            details
+                .primary_rows
+                .iter()
+                .any(|row| row.label == "本机历史消耗" && row.value == compact_token_label(2000))
+        );
+    }
+
+    #[test]
+    fn review_quota_failure_downgrades_only_quota() {
+        use codex_taskbar_application::RateLimitSnapshot;
+        use codex_taskbar_domain::{
+            official::{OfficialEndpointStatus, OfficialSnapshot},
+            quota::{QuotaPresence, QuotaValue},
+        };
+        let mut coordinator = MonitorCoordinator::default();
+        let quota = RateLimitSnapshot {
+            five_hour: None,
+            weekly: Some(QuotaValue::from_used_percent(20.0, Some(10080), None)),
+            observed_at_unix_ms: 100,
+            revision: 10,
+        };
+        coordinator.apply(TelemetryUpdate::RateLimits(quota.clone()));
+        let official = OfficialSnapshot {
+            account_status: OfficialEndpointStatus::live(200),
+            quota_status: OfficialEndpointStatus::live(100).cached(),
+            ..Default::default()
+        };
+        assert!(apply_session_update(
+            &mut coordinator,
+            SessionUpdate {
+                quota,
+                official,
+                usage: None,
+                activity: None,
+                freshness: SessionFreshness::Fresh,
+                source_health: SourceHealth::Degraded,
+                observed_at_unix_ms: Some(200),
+                age: None,
+                reset_account_scoped_state: false
+            }
+        ));
+        assert_eq!(coordinator.state().weekly.presence, QuotaPresence::Unknown);
+        assert_eq!(coordinator.state().official.as_ref().unwrap().account_status.freshness, OfficialFreshness::Live);
+    }
+}
+
+// 附加到 runtime 的审查副本运行；不修改生产源码、账本或会话。
+#[cfg(test)]
+mod followup_probes {
+    use super::*;
+    use crate::session_token_fallback::{SessionTokenBatch, SessionTokenEvent};
+    use std::io::Write;
+
+    fn counts(input: u64, output: u64) -> TokenCounts {
+        TokenCounts { input: Some(input), output: Some(output), ..Default::default() }
+    }
+    fn batch(bootstrap: bool, input: u64, output: u64) -> SessionTokenBatch {
+        SessionTokenBatch {
+            reset: bootstrap,
+            bootstrap,
+            events: vec![SessionTokenEvent {
+                // 此 fixture 的 bootstrap 表示启动前历史；新增使用 bootstrap=false。
+                occurred_at_unix_ms: if bootstrap { 0 } else { i64::MAX },
+                historical: bootstrap,
+                counts: counts(input, output),
+                model: None,
+                local_day_key: 20260922,
+                local_hour: 12,
+            }],
+        }
+    }
+    fn line(input: u64, output: u64, second: u8) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({"timestamp":format!("2026-09-22T04:00:{second:02}Z"), "payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":input,"output_tokens":output}}}})
+        )
+    }
+
+    #[test]
+    fn followup_preserved_fallback_total_survives_detailed_increment() {
+        let mut ledger = LocalUsageLedger::default();
+        ledger.replace_session_day(20260922, [(12, TokenCounts { total: Some(300), ..Default::default() })]);
+        apply_session_batch_to_ledger(&mut ledger, &batch(true, 90, 10), 20260922);
+        assert_eq!(ledger.today_counts(20260922).unwrap().display_total(), Some(300));
+        apply_session_batch_to_ledger(&mut ledger, &batch(false, 50, 10), 20260922);
+        assert_eq!(
+            ledger.today_counts(20260922).unwrap().display_total(),
+            Some(360),
+            "旧总量300加真实新增60不能变成60"
+        );
+    }
+
+    #[test]
+    fn followup_partial_bootstrap_does_not_recount_preserved_history() {
+        let root =
+            std::env::temp_dir().join(format!("taskbar-followup-partial-{}-{}", std::process::id(), now_unix_ms()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        let second = line(180, 20, 2);
+        std::fs::write(&path, format!("{}{}", line(90, 10, 1), &second[..second.len() / 2])).unwrap();
+        let mut ledger = LocalUsageLedger::default();
+        ledger.replace_session_day(20260922, [(12, counts(270, 30))]);
+        let mut tailer = SessionTokenTailer::new(&root);
+        let first = tailer.poll(20260922, 12).unwrap();
+        assert!(first.bootstrap);
+        apply_session_batch_to_ledger(&mut ledger, &first, 20260922);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&second.as_bytes()[second.len() / 2..])
+            .unwrap();
+        let next = tailer.poll(20260922, 12).unwrap();
+        assert!(!next.bootstrap);
+        apply_session_batch_to_ledger(&mut ledger, &next, 20260922);
+        let actual = ledger.today_counts(20260922).unwrap().display_total();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        assert_eq!(actual, Some(300), "已在旧账本中的半行补全不应再次入账");
+    }
+
+    #[test]
+    fn followup_midnight_fallback_does_not_replay_yesterdays_delta() {
+        let mut ledger = LocalUsageLedger::default();
+        let counter = |total| [ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: total }];
+        // 昨天首轮 fallback 建立基线，此后 session authoritative 禁用了 observe。
+        ledger.observe(LocalUsageClock { day_key: 20260922, hour: 12 }, counter(100));
+        assert!(apply_session_batch_to_ledger(&mut ledger, &batch(true, 900, 100), 20260922));
+        // 凌晨尚无新消耗；runtime 因日期变化重新启用 fallback，旧基线仍为100。
+        ledger.observe(LocalUsageClock { day_key: 20260923, hour: 0 }, counter(1100));
+        assert_eq!(
+            ledger.today_counts(20260923).and_then(|c| c.display_total()).unwrap_or(0),
+            0,
+            "昨日已由session记录的1000不能成为今天的新增"
+        );
+    }
+    fn assert_roundtrip_totals(ledger: &mut LocalUsageLedger, expected: u64) {
+        assert_roundtrip_totals_on(ledger, 20260922, expected);
+    }
+
+    fn assert_roundtrip_totals_on(ledger: &mut LocalUsageLedger, day: i32, expected: u64) {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "taskbar-followup-roundtrip-{}-{}-{}.sqlite",
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
+            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        assert_eq!(ledger.today_counts(day).unwrap().display_total(), Some(expected));
+        assert_eq!(ledger.today_hourly_tokens(day).iter().sum::<u64>(), expected);
+        assert_eq!(ledger.today_models(day).iter().map(|(_, usage)| usage.total_tokens).sum::<u64>(), expected);
+        ledger.save_sqlite(&path).unwrap();
+        let restored = LocalUsageLedger::load_sqlite(&path).unwrap();
+        assert_eq!(restored.today_counts(day).unwrap().display_total(), Some(expected));
+        assert_eq!(restored.today_hourly_tokens(day), ledger.today_hourly_tokens(day));
+        assert_eq!(restored.today_models(day), ledger.today_models(day));
+        let restored_json = LocalUsageLedger::from_persisted(ledger.persisted());
+        assert_eq!(restored_json.today_counts(day).unwrap().display_total(), Some(expected));
+        // 只对 Windows 短暂共享/锁冲突做有界清理重试；持久故障仍使测试失败。
+        let mut removed = std::fs::remove_file(&path);
+        for _ in 0..20 {
+            if !removed.as_ref().is_err_and(|error| matches!(error.raw_os_error(), Some(32 | 33))) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+            removed = std::fs::remove_file(&path);
+        }
+        removed.unwrap();
+    }
+
+    #[test]
+    fn followup_total_only_plus_live_detail_survives_all_projections() {
+        let mut ledger = LocalUsageLedger::default();
+        ledger.replace_session_day(20260922, [(12, TokenCounts { total: Some(300), ..Default::default() })]);
+        apply_session_batch_to_ledger(&mut ledger, &batch(true, 90, 10), 20260922);
+        apply_session_batch_to_ledger(&mut ledger, &batch(false, 50, 10), 20260922);
+        assert_roundtrip_totals(&mut ledger, 360);
+        // 未知的300不能因局部明细而被虚构为输入或输出。
+        assert_eq!(ledger.today_counts(20260922).unwrap().input, None);
+    }
+
+    #[test]
+    fn followup_truncation_restore_then_real_growth_is_reconciled_end_to_end() {
+        let root =
+            std::env::temp_dir().join(format!("taskbar-followup-restore-{}-{}", std::process::id(), now_unix_ms()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        let first = line(90, 10, 1);
+        let second = line(180, 20, 2);
+        std::fs::write(&path, format!("{first}{second}")).unwrap();
+        let mut ledger = LocalUsageLedger::default();
+        let mut tailer = SessionTokenTailer::new(&root);
+        apply_session_batch_to_ledger(&mut ledger, &tailer.poll(20260922, 12).unwrap(), 20260922);
+        assert_roundtrip_totals(&mut ledger, 300);
+        std::fs::write(&path, &first).unwrap();
+        assert!(tailer.poll(20260922, 12).is_none());
+        apply_session_batch_to_ledger(&mut ledger, &tailer.poll(20260922, 12).unwrap(), 20260922);
+        assert_roundtrip_totals(&mut ledger, 300);
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(second.as_bytes()).unwrap();
+        apply_session_batch_to_ledger(&mut ledger, &tailer.poll(20260922, 12).unwrap(), 20260922);
+        assert_roundtrip_totals(&mut ledger, 300);
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(line(50, 10, 3).as_bytes()).unwrap();
+        apply_session_batch_to_ledger(&mut ledger, &tailer.poll(20260922, 12).unwrap(), 20260922);
+        assert_roundtrip_totals(&mut ledger, 360);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn followup_midnight_refresh_still_rebaselines_last_poll_gap() {
+        let mut ledger = LocalUsageLedger::default();
+        let counter = |total| [ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: total }];
+        ledger.observe(LocalUsageClock { day_key: 20260922, hour: 23 }, counter(100));
+        apply_session_batch_to_ledger(&mut ledger, &batch(true, 900, 100), 20260922);
+        ledger.refresh_baselines(counter(1100));
+        apply_session_batch_to_ledger(&mut ledger, &batch(false, 90, 10), 20260922);
+        assert!(!ledger.observe(LocalUsageClock { day_key: 20260923, hour: 0 }, counter(1200)));
+        assert!(ledger.observe(LocalUsageClock { day_key: 20260923, hour: 0 }, counter(1210)));
+        assert_eq!(ledger.today_counts(20260923).unwrap().display_total(), Some(10));
+    }
+    #[test]
+    fn followup_restart_with_missing_history_reconciles_later_restored_records() {
+        let root = std::env::temp_dir()
+            .join(format!("taskbar-followup-restart-{}", time::OffsetDateTime::now_utc().unix_timestamp_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        std::fs::write(&path, line(90, 10, 1)).unwrap();
+        let mut ledger = LocalUsageLedger::default();
+        ledger.replace_session_day(20260922, [(12, counts(270, 30))]);
+        let mut tailer = SessionTokenTailer::new(&root);
+        apply_session_batch_to_ledger(&mut ledger, &tailer.poll(20260922, 12).unwrap(), 20260922);
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(line(180, 20, 2).as_bytes()).unwrap();
+        let recovered = tailer.poll(20260922, 12).unwrap();
+        assert!(recovered.events[0].historical);
+        apply_session_batch_to_ledger(&mut ledger, &recovered, 20260922);
+        assert_roundtrip_totals(&mut ledger, 300);
+        apply_session_batch_to_ledger(&mut ledger, &batch(false, 50, 10), 20260922);
+        assert_roundtrip_totals(&mut ledger, 360);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    fn live_batch_after_empty(input: u64, output: u64, timestamp: i64) -> SessionTokenBatch {
+        SessionTokenBatch {
+            bootstrap: true,
+            reset: false,
+            events: vec![SessionTokenEvent {
+                counts: counts(input, output),
+                model: None,
+                local_day_key: 20260922,
+                local_hour: 12,
+                historical: false,
+                occurred_at_unix_ms: timestamp,
+            }],
+        }
+    }
+
+    #[test]
+    fn second_review_sqlite_before_first_live_session_is_one_coverage_interval() {
+        let mut ledger = LocalUsageLedger::default();
+        let clock = LocalUsageClock { day_key: 20260922, hour: 12 };
+        let counters = |total| [ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: total }];
+        ledger.replace_session_day(20260922, [(12, counts(270, 30))]);
+        ledger.observe_at(clock, counters(100), 100);
+        let empty = SessionTokenBatch { bootstrap: true, reset: true, events: Vec::new() };
+        assert!(!apply_session_batch_to_ledger(&mut ledger, &empty, 20260922));
+        // 空扫描不能吞掉 SQLite 后备的第一笔真实差额。
+        assert!(ledger.observe_at(clock, counters(160), 1000));
+        assert_eq!(ledger.today_counts(20260922).unwrap().display_total(), Some(360));
+        let session = live_batch_after_empty(50, 10, 900);
+        assert!(apply_session_batch_to_ledger(&mut ledger, &session, 20260922));
+        assert_roundtrip_totals(&mut ledger, 360);
+        // SQLite 采样后的消费不能被前面的覆盖区间压住。
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(30, 10, 1100), 20260922);
+        assert_roundtrip_totals(&mut ledger, 400);
+    }
+
+    #[test]
+    fn second_review_sqlite_partial_coverage_does_not_swallow_later_live_growth() {
+        let mut ledger = LocalUsageLedger::default();
+        let clock = LocalUsageClock { day_key: 20260922, hour: 12 };
+        let counters = |total| [ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: total }];
+        ledger.replace_session_day(20260922, [(12, counts(270, 30))]);
+        ledger.observe_at(clock, counters(100), 100);
+        apply_session_batch_to_ledger(
+            &mut ledger,
+            &SessionTokenBatch { bootstrap: true, reset: true, events: Vec::new() },
+            20260922,
+        );
+        ledger.observe_at(clock, counters(360), 1000);
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(50, 10, 900), 20260922);
+        assert_roundtrip_totals(&mut ledger, 560);
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(30, 10, 1100), 20260922);
+        assert_roundtrip_totals(&mut ledger, 600);
+        // 采样区间余下200补齐时只完善明细，不再次加账。
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(180, 20, 950), 20260922);
+        assert_roundtrip_totals(&mut ledger, 600);
+    }
+
+    #[test]
+    fn second_review_session_before_sqlite_refresh_keeps_live_growth() {
+        let mut ledger = LocalUsageLedger::default();
+        ledger.replace_session_day(20260922, [(12, counts(270, 30))]);
+        apply_session_batch_to_ledger(
+            &mut ledger,
+            &SessionTokenBatch { bootstrap: true, reset: true, events: Vec::new() },
+            20260922,
+        );
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(50, 10, 900), 20260922);
+        ledger.refresh_baselines([ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: 160 }]);
+        assert_roundtrip_totals(&mut ledger, 360);
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(30, 10, 1100), 20260922);
+        assert_roundtrip_totals(&mut ledger, 400);
+    }
+    #[test]
+    fn third_review_runtime_delayed_history_and_live_share_sqlite_coverage() {
+        use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+        for live_first in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "taskbar-mixed-late-{}-{live_first}-{}",
+                std::process::id(),
+                OffsetDateTime::now_utc().unix_timestamp_nanos()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let path = root.join("session.jsonl");
+            std::fs::write(&path, "").unwrap();
+            let (day, hour) = codex_taskbar_platform_windows::local_usage_clock();
+            let clock = LocalUsageClock { day_key: day, hour };
+            let counters = |total| [ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: total }];
+            let timestamp = || OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+            let record = |stamp: &str, input: u64, output: u64| {
+                format!(
+                    "{}\n",
+                    serde_json::json!({"timestamp":stamp,"payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":input,"output_tokens":output}}}})
+                )
+            };
+            let mut ledger = LocalUsageLedger::default();
+            ledger.replace_session_day(day, [(hour, counts(270, 30))]);
+            ledger.observe_at(clock, counters(0), now_unix_ms());
+            let old = record(&timestamp(), 270, 30);
+            let delayed = record(&timestamp(), 50, 10);
+            std::thread::sleep(Duration::from_millis(20));
+            let mut tailer = SessionTokenTailer::new(&root);
+            let initial = tailer.poll(day, hour).unwrap();
+            assert!(initial.reset && initial.events.is_empty());
+            assert!(!apply_session_batch_to_ledger(&mut ledger, &initial, day));
+            std::thread::sleep(Duration::from_millis(2));
+            let live_covered = record(&timestamp(), 30, 10);
+            // SQL 的这100同时包含扫描前发生的60和扫描后发生的40。
+            assert!(ledger.observe_at(clock, counters(100), now_unix_ms()));
+            assert_eq!(ledger.today_counts(day).unwrap().display_total(), Some(400));
+            let append = |text: &str| {
+                std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(text.as_bytes()).unwrap()
+            };
+            let records = if live_first {
+                [(&live_covered, false), (&delayed, true), (&old, true)]
+            } else {
+                [(&delayed, true), (&old, true), (&live_covered, false)]
+            };
+            for (text, historical) in records {
+                append(text);
+                let next = tailer.poll(day, hour).unwrap();
+                assert!(!next.reset);
+                assert_eq!(next.events[0].historical, historical);
+                apply_session_batch_to_ledger(&mut ledger, &next, day);
+                assert_roundtrip_totals_on(&mut ledger, day, 400);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            append(&record(&timestamp(), 15, 5));
+            let next = tailer.poll(day, hour).unwrap();
+            assert!(!next.events[0].historical);
+            apply_session_batch_to_ledger(&mut ledger, &next, day);
+            assert_roundtrip_totals_on(&mut ledger, day, 420);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn third_review_runtime_single_pre_scan_event_remains_sixty() {
+        use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+        let root = std::env::temp_dir().join(format!(
+            "taskbar-single-late-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let (day, hour) = codex_taskbar_platform_windows::local_usage_clock();
+        let clock = LocalUsageClock { day_key: day, hour };
+        let counters = |total| [ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: total }];
+        let mut ledger = LocalUsageLedger::default();
+        ledger.observe_at(clock, counters(0), now_unix_ms());
+        let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let mut tailer = SessionTokenTailer::new(&root);
+        let initial = tailer.poll(day, hour).unwrap();
+        apply_session_batch_to_ledger(&mut ledger, &initial, day);
+        ledger.observe_at(clock, counters(60), now_unix_ms());
+        let line = serde_json::json!({"timestamp":timestamp,"payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"output_tokens":10}}}});
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+        let delayed = tailer.poll(day, hour).unwrap();
+        assert!(!delayed.reset && delayed.events[0].historical);
+        apply_session_batch_to_ledger(&mut ledger, &delayed, day);
+        assert_roundtrip_totals_on(&mut ledger, day, 60);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn third_review_incomplete_old_history_does_not_hide_confirmed_live_coverage() {
+        let mut ledger = LocalUsageLedger::default();
+        let clock = LocalUsageClock { day_key: 20260922, hour: 12 };
+        let counters = |total| [ThreadTokenCounter { thread_id: "synthetic".into(), tokens_used: total }];
+        ledger.replace_session_day(20260922, [(12, counts(270, 30))]);
+        ledger.observe_at(clock, counters(0), 100);
+        apply_session_batch_to_ledger(
+            &mut ledger,
+            &SessionTokenBatch { reset: true, bootstrap: true, events: Vec::new() },
+            20260922,
+        );
+        ledger.observe_at(clock, counters(60), 1000);
+        // SQL只及时写入了60，session提供同一采样区间内确定的新消费100。
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(90, 10, 900), 20260922);
+        assert_roundtrip_totals(&mut ledger, 400);
+        // 旧历史只恢复100，不影响扫描后确认的100。
+        let mut historical = batch(false, 90, 10);
+        historical.events[0].historical = true;
+        historical.events[0].occurred_at_unix_ms = 50;
+        apply_session_batch_to_ledger(&mut ledger, &historical, 20260922);
+        assert_roundtrip_totals(&mut ledger, 400);
+        apply_session_batch_to_ledger(&mut ledger, &live_batch_after_empty(30, 10, 1100), 20260922);
+        assert_roundtrip_totals(&mut ledger, 440);
+    }
 }

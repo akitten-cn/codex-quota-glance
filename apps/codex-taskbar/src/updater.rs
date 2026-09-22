@@ -163,17 +163,41 @@ pub fn launch_update_helper(staged: &Path) -> Result<(), UpdateError> {
 pub fn apply_staged_update(target: &Path, old_pid: u32) -> Result<(), UpdateError> {
     wait_for_process_exit(old_pid);
     let staged = std::env::current_exe()?;
-    let backup = target.with_extension("exe.old");
-    let _ = std::fs::remove_file(&backup);
-    if target.exists() {
-        std::fs::rename(target, &backup)?;
+    install_staged_update(&staged, target, |target| {
+        Command::new(target).arg("--cleanup-update").arg(&staged).spawn().map(|_| ())
+    })?;
+    Ok(())
+}
+
+fn install_staged_update(
+    staged: &Path,
+    target: &Path,
+    launch: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let pending = target.with_extension(format!("exe.pending-{stamp}"));
+    let backup = target.with_extension(format!("exe.backup-{stamp}"));
+    // 先准备完整的新文件，再移动旧版；复制失败不能碰旧版。
+    if let Err(error) =
+        std::fs::copy(staged, &pending).and_then(|_| std::fs::OpenOptions::new().write(true).open(&pending)?.sync_all())
+    {
+        let _ = std::fs::remove_file(&pending);
+        return Err(error);
     }
-    if let Err(error) = std::fs::copy(&staged, target) {
-        let _ = std::fs::rename(&backup, target);
-        return Err(UpdateError::Io(error));
+    let had_target = target.exists();
+    if had_target && let Err(error) = std::fs::rename(target, &backup) {
+        let _ = std::fs::remove_file(&pending);
+        return Err(error);
     }
-    let _ = std::fs::remove_file(&backup);
-    Command::new(target).arg("--cleanup-update").arg(&staged).spawn()?;
+    if let Err(error) = std::fs::rename(&pending, target).and_then(|_| launch(target)) {
+        let _ = std::fs::remove_file(target);
+        if had_target {
+            std::fs::rename(&backup, target)?;
+        }
+        let _ = std::fs::remove_file(&pending);
+        return Err(error);
+    }
+    // spawn 成功不等于新版健康；保留旧版备份供启动后故障恢复。
     Ok(())
 }
 
@@ -469,5 +493,33 @@ mod tests {
         let bytes = parallel_range_get(&url, length, UPDATE_LIMIT).expect("四路 Range 下载失败");
         let actual = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
         assert_eq!(actual, expected);
+    }
+    #[test]
+    fn failed_launch_restores_old_executable_and_failed_copy_never_moves_it() {
+        let root = std::env::temp_dir().join(format!(
+            "taskbar-update-review-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("installed.exe");
+        let staged = root.join("new.exe");
+        std::fs::write(&target, b"old").unwrap();
+        assert!(install_staged_update(&staged, &target, |_| Ok(())).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        std::fs::write(&staged, b"new").unwrap();
+        assert!(
+            install_staged_update(&staged, &target, |_| Err(std::io::Error::other("injected spawn failure"))).is_err()
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        install_staged_update(&staged, &target, |_| Ok(())).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains("backup-"))
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

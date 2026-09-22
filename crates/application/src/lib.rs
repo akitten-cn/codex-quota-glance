@@ -54,3 +54,5 @@ pub trait CodexTelemetrySource {
         Err(TelemetryError::Incompatible("数据源不提供 Token 用量".to_owned()))
     }
 }
+
+pub mod single_instance;

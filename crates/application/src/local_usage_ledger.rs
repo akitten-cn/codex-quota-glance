@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use codex_taskbar_domain::usage::TokenCounts;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 /// 结构化线程累计的最小投影。调用方不得在日志或持久化文件中输出 `thread_id`。
@@ -57,14 +57,29 @@ pub struct PersistedUsageDay {
     pub hourly_estimated_api_cost_micro_usd: [u64; 24],
 }
 
+/// 只包含数值、模型与事件时间的 session 投影。
+#[derive(Debug, Clone)]
+pub struct SessionUsageEvent {
+    pub hour: u8,
+    pub counts: TokenCounts,
+    pub cost: Option<u64>,
+    pub model: Option<String>,
+    pub historical: bool,
+    pub occurred_at_unix_ms: Option<i64>,
+}
+
 /// 在内存中维护线程基线，在磁盘上只维护桶总计。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LocalUsageLedger {
     models: BTreeMap<(i32, String), ModelUsage>,
     baselines: BTreeMap<String, u64>,
+    reconciliations: BTreeMap<i32, SessionReconciliation>,
+    baseline_only_next: bool,
     days: BTreeMap<i32, UsageDay>,
     dirty: bool,
     retained_days: usize,
+    cleared_at_ms: i64,
+    migration_complete: bool,
 }
 
 impl Default for LocalUsageLedger {
@@ -72,9 +87,13 @@ impl Default for LocalUsageLedger {
         Self {
             models: BTreeMap::new(),
             baselines: BTreeMap::new(),
+            reconciliations: BTreeMap::new(),
+            baseline_only_next: false,
             days: BTreeMap::new(),
             dirty: false,
             retained_days: 90,
+            cleared_at_ms: 0,
+            migration_complete: false,
         }
     }
 }
@@ -100,6 +119,21 @@ struct UsageDay {
     hourly_estimated_api_cost_micro_usd: [u64; 24],
 }
 
+#[derive(Debug, Clone)]
+struct SessionReconciliation {
+    preserved: UsageDay,
+    preserved_models: BTreeMap<String, ModelUsage>,
+    recovered: UsageDay,
+    recovered_models: BTreeMap<String, ModelUsage>,
+    sqlite_pending: UsageDay,
+    sqlite_cutoff_ms: Option<i64>,
+    covered_live: UsageDay,
+    covered_live_models: BTreeMap<String, ModelUsage>,
+    session_active: bool,
+    live: UsageDay,
+    live_models: BTreeMap<String, ModelUsage>,
+}
+
 const fn empty_hourly_tokens() -> [u64; 24] {
     [0; 24]
 }
@@ -121,6 +155,10 @@ impl UsageDay {
     }
 
     fn counts(&self) -> TokenCounts {
+        // 部分明细不能冒充整日明细；保留未分解总量，明细完整后才向 UI 提供分项。
+        if self.total_tokens != self.input_tokens.saturating_add(self.output_tokens) {
+            return TokenCounts { total: (self.total_tokens > 0).then_some(self.total_tokens), ..Default::default() };
+        }
         TokenCounts {
             input: (self.input_tokens > 0).then_some(self.input_tokens),
             cached_input: (self.cached_input_tokens > 0).then_some(self.cached_input_tokens),
@@ -152,14 +190,17 @@ impl UsageDay {
 }
 
 impl LocalUsageLedger {
-    pub const VERSION: u8 = 3;
+    pub const VERSION: u8 = 4;
     const MAX_RETAINED_DAYS: usize = 365;
 
     /// 清空仅属于本应用的聚合历史，同时丢弃内存基线，避免清理后把旧累计误算为新增。
     /// 调用方应在用户明确二次确认后执行，并立即持久化空账本。
     pub fn clear(&mut self) {
+        self.cleared_at_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+        self.migration_complete = true;
         self.models.clear();
         self.baselines.clear();
+        self.reconciliations.clear();
         self.days.clear();
         self.dirty = true;
     }
@@ -173,14 +214,16 @@ impl LocalUsageLedger {
                 (day.day_key, {
                     let mut hourly_tokens = day.hourly_tokens;
                     for (hour, hourly_total) in hourly_tokens.iter_mut().enumerate() {
-                        if day.hourly_input_tokens[hour] > 0 || day.hourly_output_tokens[hour] > 0 {
+                        if persisted.version < 4
+                            && (day.hourly_input_tokens[hour] > 0 || day.hourly_output_tokens[hour] > 0)
+                        {
                             *hourly_total =
                                 day.hourly_input_tokens[hour].saturating_add(day.hourly_output_tokens[hour]);
                         }
                     }
                     let detailed_total = day.input_tokens.saturating_add(day.output_tokens);
                     UsageDay {
-                        total_tokens: if day.input_tokens > 0 || day.output_tokens > 0 {
+                        total_tokens: if persisted.version < 4 && (day.input_tokens > 0 || day.output_tokens > 0) {
                             detailed_total
                         } else {
                             day.total_tokens
@@ -202,7 +245,17 @@ impl LocalUsageLedger {
             let Some(first) = days.first_key_value().map(|(key, _)| *key) else { break };
             days.remove(&first);
         }
-        Self { models: BTreeMap::new(), baselines: BTreeMap::new(), days, dirty: false, retained_days: 90 }
+        Self {
+            models: BTreeMap::new(),
+            baselines: BTreeMap::new(),
+            reconciliations: BTreeMap::new(),
+            baseline_only_next: false,
+            days,
+            dirty: false,
+            retained_days: 90,
+            cleared_at_ms: 0,
+            migration_complete: false,
+        }
     }
 
     #[must_use]
@@ -234,6 +287,10 @@ impl LocalUsageLedger {
     pub fn load_sqlite(path: &std::path::Path) -> rusqlite::Result<Self> {
         let connection = open_usage_database(path)?;
         let mut days = BTreeMap::new();
+        let totals_version: i64 = connection
+            .query_row("SELECT value FROM usage_metadata WHERE key='totals_version'", [], |row| row.get(0))
+            .optional()?
+            .unwrap_or(3);
         let mut repaired = false;
         {
             let mut statement = connection.prepare(
@@ -251,7 +308,8 @@ impl LocalUsageLedger {
             })?;
             for row in rows {
                 let (day_key, total, input, cached, output, cost) = row?;
-                let canonical_total = if input > 0 || output > 0 { input.saturating_add(output) } else { total };
+                let canonical_total =
+                    if totals_version < 4 && (input > 0 || output > 0) { input.saturating_add(output) } else { total };
                 repaired |= canonical_total != total || cached > input;
                 days.insert(
                     day_key,
@@ -285,7 +343,8 @@ impl LocalUsageLedger {
                 let (day_key, hour, total, input, cached, output, cost) = row?;
                 let Some(day) = days.get_mut(&day_key) else { continue };
                 let index = usize::from(hour.min(23));
-                let canonical_total = if input > 0 || output > 0 { input.saturating_add(output) } else { total };
+                let canonical_total =
+                    if totals_version < 4 && (input > 0 || output > 0) { input.saturating_add(output) } else { total };
                 repaired |= canonical_total != total || cached > input;
                 day.hourly_tokens[index] = canonical_total;
                 day.hourly_input_tokens[index] = input;
@@ -308,7 +367,28 @@ impl LocalUsageLedger {
             let (key, value) = row?;
             models.insert(key, value);
         }
-        Ok(Self { models, baselines: BTreeMap::new(), days, dirty: repaired, retained_days: 90 })
+        let cleared_at_ms = connection
+            .query_row("SELECT value FROM usage_metadata WHERE key='cleared_at_ms'", [], |row| row.get(0))
+            .optional()?
+            .unwrap_or(0);
+        let migration_complete = connection
+            .query_row("SELECT value FROM usage_metadata WHERE key='migration_complete'", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+            .unwrap_or(0)
+            != 0;
+        Ok(Self {
+            models,
+            baselines: BTreeMap::new(),
+            reconciliations: BTreeMap::new(),
+            baseline_only_next: false,
+            days,
+            dirty: repaired,
+            retained_days: 90,
+            cleared_at_ms,
+            migration_complete,
+        })
     }
 
     /// 用一个事务替换关系型聚合桶。最多 365×24 行且仅按低频批次调用，避免
@@ -343,13 +423,182 @@ impl LocalUsageLedger {
                 )?;
             }
         }
+        transaction.execute(
+            "INSERT OR REPLACE INTO usage_metadata(key,value) VALUES('cleared_at_ms',?1)",
+            [self.cleared_at_ms],
+        )?;
+        transaction.execute("INSERT OR REPLACE INTO usage_metadata(key,value) VALUES('migration_complete',1)", [])?;
+        transaction.execute("INSERT OR REPLACE INTO usage_metadata(key,value) VALUES('totals_version',4)", [])?;
         transaction.commit()?;
+        self.migration_complete = true;
         self.mark_persisted();
+        Ok(())
+    }
+
+    /// session 权威期间继续刷新 SQLite 基线，但不向日桶计费。
+    pub fn refresh_baselines(&mut self, counters: impl IntoIterator<Item = ThreadTokenCounter>) {
+        self.baseline_only_next = true;
+        self.baselines = counters.into_iter().map(|counter| (counter.thread_id, counter.tokens_used)).collect();
+    }
+
+    /// 聚合原账本、恢复范围及实时范围，恢复补齐不能当作实时新增。
+    pub fn reconcile_session_batch(
+        &mut self,
+        day: i32,
+        bootstrap: bool,
+        events: impl IntoIterator<Item = (u8, TokenCounts, Option<u64>, Option<String>, bool)>,
+    ) {
+        self.reconcile_session_batch_at(
+            day,
+            bootstrap,
+            events.into_iter().map(|(hour, counts, cost, model, historical)| SessionUsageEvent {
+                hour,
+                counts,
+                cost,
+                model,
+                historical,
+                occurred_at_unix_ms: None,
+            }),
+        );
+    }
+
+    pub fn reconcile_session_batch_at(
+        &mut self,
+        day: i32,
+        reset: bool,
+        events: impl IntoIterator<Item = SessionUsageEvent>,
+    ) {
+        let events: Vec<_> = events.into_iter().collect();
+        if !events.is_empty() {
+            self.baseline_only_next = true;
+        }
+        if reset {
+            let known_model_total = self
+                .models
+                .iter()
+                .filter(|((key, _), _)| *key == day)
+                .fold(0_u64, |sum, (_, usage)| sum.saturating_add(usage.total_tokens));
+            let unattributed =
+                self.days.get(&day).map_or(0, |bucket| bucket.total_tokens).saturating_sub(known_model_total);
+            if unattributed > 0 {
+                let usage = self.models.entry((day, "未识别模型".to_owned())).or_default();
+                merge_model(
+                    usage,
+                    &ModelUsage { total_tokens: unattributed, unpriced_tokens: unattributed, cost_micro_usd: 0 },
+                );
+            }
+            // 来源切换使先前累计基线失效；下一帧 SQLite 只能重新建基线。
+            if !events.is_empty() {
+                self.baselines.clear();
+            }
+            self.reconciliations.insert(
+                day,
+                SessionReconciliation {
+                    preserved: self.days.get(&day).cloned().unwrap_or_else(UsageDay::empty),
+                    preserved_models: self
+                        .models
+                        .iter()
+                        .filter(|((key, _), _)| *key == day)
+                        .map(|((_, model), usage)| (model.clone(), usage.clone()))
+                        .collect(),
+                    recovered: UsageDay::empty(),
+                    recovered_models: BTreeMap::new(),
+                    sqlite_pending: UsageDay::empty(),
+                    sqlite_cutoff_ms: None,
+                    covered_live: UsageDay::empty(),
+                    covered_live_models: BTreeMap::new(),
+                    session_active: false,
+                    live: UsageDay::empty(),
+                    live_models: BTreeMap::new(),
+                },
+            );
+        }
+        if let Some(state) = self.reconciliations.get_mut(&day) {
+            state.session_active |= !events.is_empty();
+            for SessionUsageEvent { hour, counts, cost, model, historical, occurred_at_unix_ms } in events {
+                let (bucket, models) = if historical {
+                    (&mut state.recovered, &mut state.recovered_models)
+                } else if occurred_at_unix_ms.zip(state.sqlite_cutoff_ms).is_some_and(|(event, cutoff)| event <= cutoff)
+                {
+                    (&mut state.covered_live, &mut state.covered_live_models)
+                } else {
+                    (&mut state.live, &mut state.live_models)
+                };
+                bucket.add_counts(usize::from(hour.min(23)), &counts, cost);
+                add_model(models, model.as_deref(), &counts, cost);
+            }
+            // 两个来源都覆盖截至 SQLite 采样边界的累计范围：
+            // 已存基线 + SQLite 差额，与 session 历史恢复 + 该区间 live。
+            // 历史分类不代表与 SQLite 不重叠，禁止先按历史分组求和。
+            let mut sqlite_coverage = state.preserved.clone();
+            merge_day(&mut sqlite_coverage, &state.sqlite_pending);
+            // 已存基线属于扫描前，明确的 covered_live 属于扫描后；两者可相加。
+            // 即使 session 历史尚未补齐，也不能把已确认的 live 压在旧总量下面。
+            let (mut session_coverage, mut session_models) =
+                if state.recovered.total_tokens >= state.preserved.total_tokens {
+                    (state.recovered.clone(), state.recovered_models.clone())
+                } else {
+                    (state.preserved.clone(), state.preserved_models.clone())
+                };
+            merge_day(&mut session_coverage, &state.covered_live);
+            for (name, usage) in &state.covered_live_models {
+                merge_model(session_models.entry(name.clone()).or_default(), usage);
+            }
+            let (mut bucket, mut models) = if session_coverage.total_tokens >= sqlite_coverage.total_tokens {
+                (session_coverage, session_models)
+            } else {
+                let mut models = state.preserved_models.clone();
+                let total = state.sqlite_pending.total_tokens;
+                if total > 0 {
+                    merge_model(
+                        models.entry("未识别模型".to_owned()).or_default(),
+                        &ModelUsage { total_tokens: total, cost_micro_usd: 0, unpriced_tokens: total },
+                    );
+                }
+                (sqlite_coverage, models)
+            };
+            // 只有采样边界后的 live 才属于明确不重叠的新增范围。
+            merge_day(&mut bucket, &state.live);
+            for (name, usage) in &state.live_models {
+                merge_model(models.entry(name.clone()).or_default(), usage);
+            }
+            self.days.insert(day, bucket);
+            self.models.retain(|(key, _), _| *key != day);
+            self.models.extend(models.into_iter().map(|(model, usage)| ((day, model), usage)));
+            self.dirty = true;
+        } else {
+            for SessionUsageEvent { hour, counts, cost, model, .. } in events {
+                self.observe_session_event_priced(LocalUsageClock { day_key: day, hour }, &counts, cost);
+                self.observe_model_event(day, model.as_deref(), &counts, cost);
+            }
+        }
+        self.prune_days();
+    }
+
+    /// 清理写入成功后才提交内存状态；失败保留原账本及截止时间。
+    pub fn clear_and_save(&mut self, path: &std::path::Path) -> rusqlite::Result<()> {
+        let mut cleared = self.clone();
+        cleared.clear();
+        cleared.save_sqlite(path)?;
+        *self = cleared;
         Ok(())
     }
 
     /// 接纳一帧线程累计量。返回值只代表本地统计是否新增，便于调用方节流落盘。
     pub fn observe(&mut self, clock: LocalUsageClock, counters: impl IntoIterator<Item = ThreadTokenCounter>) -> bool {
+        self.observe_at(clock, counters, (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64)
+    }
+
+    pub fn observe_at(
+        &mut self,
+        clock: LocalUsageClock,
+        counters: impl IntoIterator<Item = ThreadTokenCounter>,
+        observed_at_unix_ms: i64,
+    ) -> bool {
+        if self.baseline_only_next {
+            self.baselines.clear();
+            self.baseline_only_next = false;
+        }
         let hour = usize::from(clock.hour.min(23));
         let mut delta = 0_u64;
         for counter in counters {
@@ -360,6 +609,12 @@ impl LocalUsageLedger {
         }
         if delta == 0 {
             return false;
+        }
+        if let Some(state) = self.reconciliations.get_mut(&clock.day_key)
+            && !state.session_active
+        {
+            state.sqlite_pending.add_counts(hour, &TokenCounts { total: Some(delta), ..Default::default() }, None);
+            state.sqlite_cutoff_ms = Some(observed_at_unix_ms);
         }
         let day = self.days.entry(clock.day_key).or_insert_with(UsageDay::empty);
         day.total_tokens = day.total_tokens.saturating_add(delta);
@@ -461,15 +716,7 @@ impl LocalUsageLedger {
 
     #[must_use]
     pub fn today_hourly_tokens(&self, day_key: i32) -> [u64; 24] {
-        self.days.get(&day_key).map_or([0; 24], |day| {
-            let mut canonical = day.hourly_tokens;
-            for (hour, total) in canonical.iter_mut().enumerate() {
-                if day.hourly_input_tokens[hour] > 0 || day.hourly_output_tokens[hour] > 0 {
-                    *total = day.hourly_input_tokens[hour].saturating_add(day.hourly_output_tokens[hour]);
-                }
-            }
-            canonical
-        })
+        self.days.get(&day_key).map_or([0; 24], |day| day.hourly_tokens)
     }
 
     #[must_use]
@@ -529,13 +776,79 @@ impl LocalUsageLedger {
         self.dirty |= self.days.len() != before;
     }
 
+    pub fn cleared_at_ms(&self) -> i64 {
+        self.cleared_at_ms
+    }
+
+    pub fn migration_complete(&self) -> bool {
+        self.migration_complete
+    }
+
+    /// 平台每轮提供当前本地自然日，启动及跨日均立即裁剪。
+    pub fn prune_at_day(&mut self, day_key: i32) {
+        let Some(date) = calendar_date(day_key) else { return };
+        let cutoff = date - time::Duration::days(self.retained_days.saturating_sub(1) as i64);
+        let before = self.days.len();
+        self.days.retain(|key, _| calendar_date(*key).is_some_and(|date| date >= cutoff));
+        self.models.retain(|(day, _), _| self.days.contains_key(day));
+        self.reconciliations.retain(|day, _| self.days.contains_key(day));
+        self.dirty |= before != self.days.len();
+    }
+
     fn prune_days(&mut self) {
+        if let Some(day) = self.days.keys().next_back().copied() {
+            self.prune_at_day(day);
+        }
         while self.days.len() > self.retained_days {
             let Some(first) = self.days.first_key_value().map(|(key, _)| *key) else { break };
             self.days.remove(&first);
         }
         self.models.retain(|(day, _), _| self.days.contains_key(day));
+        self.reconciliations.retain(|day, _| self.days.contains_key(day));
     }
+}
+
+fn merge_model(target: &mut ModelUsage, source: &ModelUsage) {
+    target.total_tokens = target.total_tokens.saturating_add(source.total_tokens);
+    target.cost_micro_usd = target.cost_micro_usd.saturating_add(source.cost_micro_usd);
+    target.unpriced_tokens = target.unpriced_tokens.saturating_add(source.unpriced_tokens);
+}
+
+fn add_model(models: &mut BTreeMap<String, ModelUsage>, model: Option<&str>, counts: &TokenCounts, cost: Option<u64>) {
+    let total = counts.display_total().unwrap_or(0);
+    let usage = models.entry(model.unwrap_or("未识别模型").to_owned()).or_default();
+    merge_model(
+        usage,
+        &ModelUsage {
+            total_tokens: total,
+            cost_micro_usd: cost.unwrap_or(0),
+            unpriced_tokens: if cost.is_none() { total } else { 0 },
+        },
+    );
+}
+
+fn merge_day(target: &mut UsageDay, source: &UsageDay) {
+    macro_rules! scalar { ($($field:ident),*) => { $(target.$field = target.$field.saturating_add(source.$field);)* }; }
+    scalar!(total_tokens, input_tokens, cached_input_tokens, output_tokens, estimated_api_cost_micro_usd);
+    for hour in 0..24 {
+        macro_rules! hourly { ($($field:ident),*) => { $(target.$field[hour] = target.$field[hour].saturating_add(source.$field[hour]);)* }; }
+        hourly!(
+            hourly_tokens,
+            hourly_input_tokens,
+            hourly_cached_input_tokens,
+            hourly_output_tokens,
+            hourly_estimated_api_cost_micro_usd
+        );
+    }
+}
+
+fn calendar_date(key: i32) -> Option<time::Date> {
+    time::Date::from_calendar_date(
+        key / 10000,
+        time::Month::try_from(((key / 100) % 100) as u8).ok()?,
+        (key % 100) as u8,
+    )
+    .ok()
 }
 
 fn open_usage_database(path: &std::path::Path) -> rusqlite::Result<Connection> {
@@ -544,6 +857,7 @@ fn open_usage_database(path: &std::path::Path) -> rusqlite::Result<Connection> {
     connection.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
+         CREATE TABLE IF NOT EXISTS usage_metadata(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS usage_model_daily(
            day_key INTEGER NOT NULL, model TEXT NOT NULL,
            total_tokens INTEGER NOT NULL, cost_micro_usd INTEGER NOT NULL,
@@ -703,7 +1017,7 @@ mod tests {
         hourly_cached[9] = 80;
         hourly_output[9] = 25;
         let persisted = PersistedLocalUsageLedger {
-            version: LocalUsageLedger::VERSION,
+            version: 3,
             days: vec![PersistedUsageDay {
                 day_key: 20260831,
                 total_tokens: 205,
@@ -745,7 +1059,7 @@ mod tests {
         hourly_cached[11] = 43_300_000;
         hourly_output[11] = 192_000;
         let ledger = LocalUsageLedger::from_persisted(PersistedLocalUsageLedger {
-            version: LocalUsageLedger::VERSION,
+            version: 3,
             days: vec![PersistedUsageDay {
                 day_key: 20260907,
                 total_tokens: 90_900_000,
@@ -800,5 +1114,57 @@ mod tests {
         assert!(!ledger.observe(clock, [counter("private-thread", 150)]));
         assert!(ledger.observe(clock, [counter("private-thread", 155)]));
         assert_eq!(ledger.today_counts(clock.day_key).and_then(|counts| counts.total), Some(5));
+    }
+    #[test]
+    fn calendar_retention_handles_leap_month_and_inactive_days() {
+        let mut ledger = LocalUsageLedger::default();
+        for day in [20240228, 20240229, 20240301] {
+            ledger.replace_session_day(day, [(12, TokenCounts { total: Some(10), ..Default::default() })]);
+        }
+        ledger.set_retention_days(2);
+        assert_eq!(ledger.recent_days(365).iter().map(|day| day.day_key).collect::<Vec<_>>(), vec![20240229, 20240301]);
+        ledger.prune_at_day(20240303);
+        assert!(ledger.recent_days(365).is_empty());
+        assert!(ledger.is_dirty());
+    }
+
+    #[test]
+    fn locked_database_read_fails_and_original_history_is_readable_after_unlock() {
+        let path = std::env::temp_dir().join(format!(
+            "taskbar-locked-db-{}-{}.sqlite",
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let mut ledger = LocalUsageLedger::default();
+        ledger.replace_session_day(20260922, [(12, TokenCounts { total: Some(123), ..Default::default() })]);
+        ledger.save_sqlite(&path).unwrap();
+        let lock = Connection::open(&path).unwrap();
+        lock.execute_batch("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; UPDATE usage_daily SET total_tokens=123;")
+            .unwrap();
+        assert!(LocalUsageLedger::load_sqlite(&path).is_err());
+        drop(lock);
+        assert_eq!(LocalUsageLedger::load_sqlite(&path).unwrap().today_counts(20260922).unwrap().total, Some(123));
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn failed_clear_preserves_memory_cutoff_and_database() {
+        let path = std::env::temp_dir()
+            .join(format!("taskbar-clear-failure-{}.sqlite", time::OffsetDateTime::now_utc().unix_timestamp_nanos()));
+        let mut ledger = LocalUsageLedger::default();
+        ledger.replace_session_day(20260922, [(12, TokenCounts { total: Some(300), ..Default::default() })]);
+        ledger.save_sqlite(&path).unwrap();
+        let lock = Connection::open(&path).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(ledger.clear_and_save(&path).is_err());
+        assert_eq!(ledger.cleared_at_ms(), 0);
+        assert_eq!(ledger.today_counts(20260922).unwrap().display_total(), Some(300));
+        drop(lock);
+        assert_eq!(
+            LocalUsageLedger::load_sqlite(&path).unwrap().today_counts(20260922).unwrap().display_total(),
+            Some(300)
+        );
+        ledger.clear_and_save(&path).unwrap();
+        assert!(LocalUsageLedger::load_sqlite(&path).unwrap().today_counts(20260922).is_none());
+        std::fs::remove_file(path).unwrap();
     }
 }

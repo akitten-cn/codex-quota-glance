@@ -66,9 +66,7 @@ impl MonitorState {
     ///
     /// 返回 `false` 表示快照比当前状态旧。相同 revision 时使用观测时间打破乱序，避免并行请求晚到后回滚 UI。
     pub fn apply_authoritative(&mut self, snapshot: RateLimitSnapshot) -> bool {
-        if snapshot.revision < self.revision
-            || (snapshot.revision == self.revision && snapshot.observed_at_unix_ms < self.observed_at_unix_ms)
-        {
+        if snapshot.observed_at_unix_ms < self.observed_at_unix_ms || snapshot.revision < self.revision {
             return false;
         }
 

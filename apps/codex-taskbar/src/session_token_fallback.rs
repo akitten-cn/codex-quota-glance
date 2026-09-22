@@ -1,25 +1,23 @@
-//! 旧胶囊版已经验证过的 Codex session Token 后备读取。
+//! 按文件增量读取 Codex session Token。
 //!
-//! 此模块只读取当前 session JSONL 尾部新增的 `token_count` 行，并且只投影
-//! `last_token_usage` 的数值字段。它绝不读取、记录或持久化 Prompt、线程标题、
-//! 线程 ID、工具参数或任意消息正文。
+//! 启动按流扫描 JSONL，随后仅处理新增完整行；只向外投影 Token、模型和时间。
+//! 原始行只短暂用于解析，不记录或持久化 Prompt、线程标题、工具参数或消息正文。
 
 use std::{
-    collections::HashSet,
+    collections::BTreeMap,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+
+#[cfg(any(target_os = "macos", test))]
+use std::io::Read;
 
 use codex_taskbar_domain::usage::TokenCounts;
 use serde_json::Value;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
-const TAIL_READ_BYTES: u64 = 512 * 1024;
-// 新 session 文件通常在用户发起下一次任务时创建。这里仅枚举当天目录，开销很小，
-// 因此将重新发现限制在 3 秒内，避免新会话开始后弹窗要等待半分钟；没有当天文件时
-// 也不会每秒递归扫描整个历史目录。
 const REDISCOVER_INTERVAL: Duration = Duration::from_secs(3);
 
 /// 一条新出现的、可安全传给 UI 的本次 Token 消耗事件。
@@ -31,23 +29,39 @@ pub struct SessionTokenEvent {
     pub model: Option<String>,
     pub local_day_key: i32,
     pub local_hour: u8,
+    /// 扫描开始前或截断恢复时间范围内的事件；扫描中新发生的事件仍为 live。
+    pub historical: bool,
+    pub occurred_at_unix_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTokenBatch {
     pub events: Vec<SessionTokenEvent>,
     pub bootstrap: bool,
+    /// 实际开始新扫描；空扫描后的首次 live 批次不重复重置账本。
+    pub reset: bool,
 }
 
-/// 只读 session 尾部轮询器。事件指纹仅在内存保存，进程退出后会重新建立基线。
+/// 文件游标和模型上下文只在内存保存，进程退出后重新建立基线。
 #[derive(Debug)]
 pub struct SessionTokenTailer {
     root: PathBuf,
     current_file: Option<PathBuf>,
     current_day: Option<i32>,
-    seen_fingerprints: HashSet<u64>,
+    files: BTreeMap<PathBuf, FileCursor>,
     last_discovery: Option<Instant>,
-    current_model: Option<String>,
+    cleared_at_ms: i64,
+    captured_today: bool,
+    latest_timestamps: BTreeMap<PathBuf, i128>,
+    scan_started_at: i128,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FileCursor {
+    offset: u64,
+    model: Option<String>,
+    initialized: bool,
+    recovery_before: Option<i128>,
 }
 
 impl SessionTokenTailer {
@@ -71,69 +85,151 @@ impl SessionTokenTailer {
             root: root.into(),
             current_file: None,
             current_day: None,
-            seen_fingerprints: HashSet::new(),
+            files: BTreeMap::new(),
             last_discovery: None,
-            current_model: None,
+            cleared_at_ms: 0,
+            captured_today: false,
+            latest_timestamps: BTreeMap::new(),
+            scan_started_at: OffsetDateTime::now_utc().unix_timestamp_nanos(),
         }
     }
 
-    /// 返回当前最新 Token 事件；同一事件只返回一次。
-    ///
-    /// 初次调用同样返回事件，调用方应将其当成基线而不是立即弹窗。
-    pub fn poll(&mut self, day_key: i32, fallback_hour: u8) -> Option<SessionTokenBatch> {
-        if self.current_day != Some(day_key) {
-            self.current_day = Some(day_key);
-            self.current_file = None;
-            self.seen_fingerprints.clear();
-            self.last_discovery = None;
-            self.current_model = None;
-            let mut files = session_files_for_day(&self.root, day_key);
-            if let Some(active) = newest_session_file_recursive(&self.root)
-                && !files.contains(&active)
-            {
-                files.push(active);
+    pub fn set_cleared_at_ms(&mut self, timestamp: i64) {
+        self.cleared_at_ms = timestamp;
+    }
+
+    /// 整批成功后才提交游标；失败会重试，禁止将部分扫描当作完整基线。
+    pub fn poll(&mut self, day_key: i32, _fallback_hour: u8) -> Option<SessionTokenBatch> {
+        self.poll_at(day_key, OffsetDateTime::now_utc().unix_timestamp_nanos())
+    }
+
+    fn poll_at(&mut self, day_key: i32, scan_time: i128) -> Option<SessionTokenBatch> {
+        let bootstrap = self.current_day != Some(day_key);
+        let scan_started_at = if bootstrap { scan_time } else { self.scan_started_at };
+        let mut cursors = if bootstrap { BTreeMap::new() } else { self.files.clone() };
+        let discover = bootstrap || self.last_discovery.is_none_or(|time| time.elapsed() >= REDISCOVER_INTERVAL);
+        if discover {
+            for path in session_files(&self.root).ok()? {
+                cursors.entry(path).or_default();
             }
-            self.current_file = newest_from_paths(&files);
-            let mut events = Vec::new();
-            for file in files {
-                let parsed = read_token_events(&file, false, fallback_hour, self.current_model.as_deref());
-                self.current_model = parsed.latest_model;
-                for (fingerprint, event) in parsed.events {
-                    if event.local_day_key == day_key && self.seen_fingerprints.insert(fingerprint) {
-                        events.push(event);
-                    }
+        }
+        let mut events = Vec::new();
+        let mut latest_timestamps = self.latest_timestamps.clone();
+        for (path, cursor) in &mut cursors {
+            // 已归档/移除的旧文件不影响其他文件；本轮发现后消失仍按失败重试。
+            if !path.try_exists().ok()? && self.files.contains_key(path) {
+                continue;
+            }
+            let metadata = match fs::metadata(path) {
+                Ok(metadata) => metadata,
+                Err(_) if !bootstrap => continue,
+                Err(_) => return None,
+            };
+            if !cursor.initialized {
+                cursor.initialized = true;
+                // 后续发现的旧文件属于恢复范围；真正新建任务用事件时间区分。
+                cursor.recovery_before = self.latest_timestamps.get(path).copied().or(Some(scan_started_at));
+            }
+            if metadata.len() == cursor.offset && !bootstrap {
+                continue;
+            }
+            let Some(mut file) = open_shared_for_read(path) else {
+                if bootstrap {
+                    return None;
                 }
+                continue;
+            };
+            if metadata.len() < cursor.offset {
+                // 日志被截断后重新建立完整基线，不能用旧偏移漏采或永远卡住。
+                self.current_day = None;
+                self.files.clear();
+                self.captured_today = false;
+                self.last_discovery = None;
+                return None;
             }
-            self.last_discovery = Some(Instant::now());
-            return Some(SessionTokenBatch { events, bootstrap: true });
-        }
-        let mut scan_full_file = false;
-        if self.should_discover() {
-            let next = newest_session_file(&self.root, day_key).or_else(|| newest_session_file_recursive(&self.root));
-            self.last_discovery = Some(Instant::now());
-            if next != self.current_file {
-                self.current_file = next;
-                self.current_model = None;
-                scan_full_file = true;
+            file.seek(SeekFrom::Start(cursor.offset)).ok()?;
+            let mut reader = BufReader::new(file);
+            let mut bytes = Vec::new();
+            loop {
+                bytes.clear();
+                let count = reader.read_until(b'\n', &mut bytes).ok()?;
+                if count == 0 || bytes.last() != Some(&b'\n') {
+                    break;
+                }
+                cursor.offset += count as u64;
+                if !bytes.windows(13).any(|w| w == b"\"token_count\"")
+                    && !bytes.windows(14).any(|w| w == b"\"turn_context\"")
+                {
+                    continue;
+                }
+                let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { continue };
+                if let Some(model) = turn_context_model(&value) {
+                    cursor.model = Some(model.to_owned());
+                    continue;
+                }
+                let Some(counts) = token_counts(&value) else { continue };
+                let Some((local_day_key, local_hour)) = event_local_clock(&value) else { continue };
+                let timestamp = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())?;
+                let stamp = timestamp.unix_timestamp_nanos();
+                latest_timestamps.entry(path.clone()).and_modify(|known| *known = (*known).max(stamp)).or_insert(stamp);
+                let late_previous_day = local_day_key < day_key
+                    && self.files.get(path).is_some_and(|previous| cursor.offset > previous.offset);
+                if (local_day_key != day_key && !late_previous_day)
+                    || timestamp.unix_timestamp_nanos() / 1_000_000 <= i128::from(self.cleared_at_ms)
+                {
+                    continue;
+                }
+                let model = token_event_model(&value).map(str::to_owned).or_else(|| cursor.model.clone());
+                // 多文件扫描期间新写入的行，即使已在打开文件时的长度内，仍是 live。
+                let historical = !late_previous_day && cursor.recovery_before.is_some_and(|cutoff| stamp <= cutoff);
+                events.push(SessionTokenEvent {
+                    counts,
+                    model,
+                    local_day_key,
+                    local_hour,
+                    historical,
+                    occurred_at_unix_ms: (stamp / 1_000_000) as i64,
+                });
             }
         }
-        let file = self.current_file.as_ref()?;
-        let parsed = read_token_events(file, !scan_full_file, fallback_hour, self.current_model.as_deref());
-        self.current_model = parsed.latest_model;
-        let events = parsed
-            .events
-            .into_iter()
-            .filter_map(|(fingerprint, event)| {
-                (event.local_day_key == day_key && self.seen_fingerprints.insert(fingerprint)).then_some(event)
-            })
-            .collect::<Vec<_>>();
-        if events.is_empty() { None } else { Some(SessionTokenBatch { events, bootstrap: false }) }
+        let baseline_batch = bootstrap || !self.captured_today;
+        self.captured_today =
+            (!bootstrap && self.captured_today) || events.iter().any(|event| event.local_day_key == day_key);
+        self.current_file = newest_from_paths(&cursors.keys().cloned().collect::<Vec<_>>());
+        self.scan_started_at = scan_started_at;
+        self.files = cursors;
+        self.latest_timestamps = latest_timestamps;
+        self.current_day = Some(day_key);
+        if discover {
+            self.last_discovery = Some(Instant::now());
+        }
+        if bootstrap || !events.is_empty() {
+            Some(SessionTokenBatch { events, bootstrap: baseline_batch, reset: bootstrap })
+        } else {
+            None
+        }
     }
+}
 
-    fn should_discover(&self) -> bool {
-        self.last_discovery.is_none_or(|instant| instant.elapsed() >= REDISCOVER_INTERVAL)
-            || self.current_file.as_ref().is_some_and(|path| !path.is_file())
+fn session_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = stack.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                stack.push(entry.path());
+            } else if kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "jsonl") {
+                files.push(entry.path());
+            }
+        }
     }
+    files.sort();
+    Ok(files)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -198,21 +294,6 @@ fn session_activity(text: &str, now_ms: i64) -> Option<codex_taskbar_domain::act
     })
 }
 
-fn session_files_for_day(root: &Path, day_key: i32) -> Vec<PathBuf> {
-    let year = day_key / 10_000;
-    let month = (day_key / 100) % 100;
-    let day = day_key % 100;
-    let folder = root.join(year.to_string()).join(format!("{month:02}")).join(format!("{day:02}"));
-    let Ok(entries) = fs::read_dir(folder) else { return Vec::new() };
-    let mut files = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
-        .collect::<Vec<_>>();
-    files.sort();
-    files
-}
-
 fn newest_from_paths(paths: &[PathBuf]) -> Option<PathBuf> {
     paths
         .iter()
@@ -221,109 +302,6 @@ fn newest_from_paths(paths: &[PathBuf]) -> Option<PathBuf> {
         })
         .max_by_key(|(modified, _)| *modified)
         .map(|(_, path)| path)
-}
-
-fn newest_session_file(root: &Path, day_key: i32) -> Option<PathBuf> {
-    let year = day_key / 10_000;
-    let month = (day_key / 100) % 100;
-    let day = day_key % 100;
-    let folder = root.join(year.to_string()).join(format!("{month:02}")).join(format!("{day:02}"));
-    newest_jsonl_in_directory(&folder)
-}
-
-/// session 滚动到新日期或用户时区变化时的保守兜底。只在启动或每 30 秒执行，
-/// 平时只读取一个活跃文件的尾部，避免高频全目录扫描。
-fn newest_session_file_recursive(root: &Path) -> Option<PathBuf> {
-    let mut stack = vec![root.to_path_buf()];
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    while let Some(directory) = stack.pop() {
-        let Ok(entries) = fs::read_dir(directory) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !kind.is_file() || path.extension().is_none_or(|extension| extension != "jsonl") {
-                continue;
-            }
-            let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else { continue };
-            if newest.as_ref().is_none_or(|(known, _)| modified > *known) {
-                newest = Some((modified, path));
-            }
-        }
-    }
-    newest.map(|(_, path)| path)
-}
-
-fn newest_jsonl_in_directory(directory: &Path) -> Option<PathBuf> {
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    let entries = fs::read_dir(directory).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|extension| extension != "jsonl") {
-            continue;
-        }
-        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else { continue };
-        if newest.as_ref().is_none_or(|(known, _)| modified > *known) {
-            newest = Some((modified, path));
-        }
-    }
-    newest.map(|(_, path)| path)
-}
-
-struct ParsedTokenEvents {
-    events: Vec<(u64, SessionTokenEvent)>,
-    latest_model: Option<String>,
-}
-
-fn read_token_events(
-    path: &Path,
-    tail_only: bool,
-    fallback_hour: u8,
-    initial_model: Option<&str>,
-) -> ParsedTokenEvents {
-    // Codex 可能正持有活动 JSONL 的写入句柄。显式允许并行读写/重命名，避免
-    // Windows 上因共享模式默认值不同而把“正在执行”错误降级成“暂无 Token”。
-    let mut latest_model = initial_model.map(str::to_owned);
-    let empty = || ParsedTokenEvents { events: Vec::new(), latest_model: latest_model.clone() };
-    let Some(mut file) = open_shared_for_read(path) else { return empty() };
-    let Ok(metadata) = file.metadata() else { return empty() };
-    let length = metadata.len();
-    let offset = if tail_only { length.saturating_sub(TAIL_READ_BYTES) } else { 0 };
-    if file.seek(SeekFrom::Start(offset)).is_err() {
-        return empty();
-    }
-    let mut bytes = Vec::with_capacity((length - offset) as usize);
-    if file.read_to_end(&mut bytes).is_err() {
-        return empty();
-    }
-    if offset > 0 {
-        let Some(first_newline) = bytes.iter().position(|byte| *byte == b'\n') else { return empty() };
-        bytes.drain(..=first_newline);
-    }
-    let Ok(text) = std::str::from_utf8(&bytes) else { return empty() };
-    let mut events = Vec::new();
-    for line in text.lines() {
-        if !line.contains("\"token_count\"") && !line.contains("\"turn_context\"") {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
-        if let Some(model) = turn_context_model(&value) {
-            latest_model = Some(model.to_owned());
-            continue;
-        }
-        let Some(counts) = token_counts(&value) else { continue };
-        let (local_day_key, local_hour) =
-            event_local_clock(&value).unwrap_or_else(|| (current_local_day_key(), fallback_hour.min(23)));
-        let model = token_event_model(&value).map(str::to_owned).or_else(|| latest_model.clone());
-        events.push((
-            event_fingerprint(&value, &counts, model.as_deref()),
-            SessionTokenEvent { counts, model, local_day_key, local_hour },
-        ));
-    }
-    ParsedTokenEvents { events, latest_model }
 }
 
 fn turn_context_model(value: &Value) -> Option<&str> {
@@ -366,18 +344,6 @@ fn event_local_clock(value: &Value) -> Option<(i32, u8)> {
     }
 }
 
-fn current_local_day_key() -> i32 {
-    #[cfg(target_os = "macos")]
-    {
-        return codex_taskbar_platform_windows::local_usage_clock().0;
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let local = OffsetDateTime::now_utc().to_offset(UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC));
-        local.year() * 10_000 + i32::from(u8::from(local.month())) * 100 + i32::from(local.day())
-    }
-}
-
 #[cfg(windows)]
 fn open_shared_for_read(path: &Path) -> Option<File> {
     use std::os::windows::fs::OpenOptionsExt;
@@ -413,32 +379,6 @@ fn token_counts(value: &Value) -> Option<TokenCounts> {
 
 fn token_value(object: &Value, field: &str) -> Option<u64> {
     object.get(field).and_then(Value::as_u64)
-}
-
-fn event_fingerprint(value: &Value, counts: &TokenCounts, model: Option<&str>) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in value.get("timestamp").and_then(Value::as_str).unwrap_or_default().bytes() {
-        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for number in [
-        counts.input,
-        counts.cached_input,
-        counts.cache_write_input,
-        counts.output,
-        counts.reasoning_output,
-        counts.total,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        for byte in number.to_le_bytes() {
-            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    for byte in model.unwrap_or_default().bytes() {
-        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }
 
 #[cfg(test)]
@@ -522,5 +462,51 @@ mod tests {
         assert_eq!(incremental.events[0].counts.total, Some(340));
         assert_eq!(incremental.events[0].model.as_deref(), Some("gpt-5.6-sol"));
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn discovery_classifies_restored_records_and_new_tasks_by_observation_boundary() {
+        let root = std::env::temp_dir()
+            .join(format!("taskbar-classification-{}", OffsetDateTime::now_utc().unix_timestamp_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let line = |second| {
+            format!(
+                "{}\n",
+                serde_json::json!({"timestamp":format!("2026-09-22T04:00:{second:02}Z"), "payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"output_tokens":10}}}})
+            )
+        };
+        fs::write(root.join("initial.jsonl"), line(1)).unwrap();
+        let mut tailer = SessionTokenTailer::new(&root);
+        tailer.poll(20260922, 12).unwrap();
+        tailer.scan_started_at =
+            OffsetDateTime::parse("2026-09-22T04:00:02Z", &Rfc3339).unwrap().unix_timestamp_nanos();
+        tailer.last_discovery = None;
+        fs::write(root.join("restored.jsonl"), line(1)).unwrap();
+        fs::write(root.join("new.jsonl"), line(3)).unwrap();
+        let batch = tailer.poll(20260922, 12).unwrap();
+        assert_eq!(batch.events.len(), 2);
+        assert_eq!(batch.events.iter().filter(|event| event.historical).count(), 1);
+        assert_eq!(batch.events.iter().filter(|event| !event.historical).count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn bootstrap_does_not_reclassify_events_written_during_scan_as_history() {
+        let root = std::env::temp_dir()
+            .join(format!("taskbar-scan-boundary-{}", OffsetDateTime::now_utc().unix_timestamp_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let event = |second| {
+            format!(
+                "{}\n",
+                serde_json::json!({"timestamp":format!("2026-09-22T04:00:{second:02}Z"), "payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"output_tokens":10}}}})
+            )
+        };
+        // 注入扫描开始时刻，文件打开时已经同时包含旧行和扫描中新写入的行。
+        fs::write(root.join("session.jsonl"), format!("{}{}", event(1), event(3))).unwrap();
+        let start = OffsetDateTime::parse("2026-09-22T04:00:02Z", &Rfc3339).unwrap().unix_timestamp_nanos();
+        let batch = SessionTokenTailer::new(&root).poll_at(20260922, start).unwrap();
+        assert!(batch.bootstrap && batch.reset);
+        assert_eq!(batch.events.len(), 2);
+        assert!(batch.events[0].historical);
+        assert!(!batch.events[1].historical);
+        fs::remove_dir_all(root).unwrap();
     }
 }

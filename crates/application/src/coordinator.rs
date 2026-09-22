@@ -81,6 +81,7 @@ impl MonitorCoordinator {
                 // 额度/Token 探针失败不能再把活动状态一起抹掉。活动状态由 App
                 // Server 通知与 SQLite freshness 单独维护，API-only 时仍应可用。
                 self.state.observed_at_unix_ms = observed_at_unix_ms;
+                self.state.revision = 0;
                 true
             }
         }

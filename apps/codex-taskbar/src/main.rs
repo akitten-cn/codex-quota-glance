@@ -53,6 +53,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or_else(|| app_data_dir(local_app_data.as_deref().map(std::path::Path::new)));
     // 保留这个逻辑路径供 reload marker 和旧 JSON 导入定位；AppConfig 实际以同目录
     // codex-taskbar.db 为主存储，首次启动会自动导入旧 settings.json。
+    let _instance_guard = if mode == RunMode::Run {
+        match codex_taskbar_application::single_instance::InstanceGuard::acquire(&root)? {
+            Some(guard) => Some(guard),
+            None => {
+                std::fs::write(root.join("activate.request"), b"")?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
     let settings_path = root.join("settings.json");
     let settings = AppConfig::load_or_create(&settings_path)?;
     let _ = codex_taskbar_diagnostics::prune_old_logs(&root.join("logs"), settings.log_retention_days);
