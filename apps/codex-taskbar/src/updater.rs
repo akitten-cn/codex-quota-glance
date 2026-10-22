@@ -1,7 +1,7 @@
 //! GitHub Releases 更新检查、下载校验与退出后替换。
 //!
-//! 网络请求使用 WinHTTP 的 automatic proxy 模式，因此会遵循 Windows 的
-//! 系统代理与 PAC/WPAD。只有带 GitHub 生成的 SHA-256 digest 的 exe 资产才会
+//! 网络请求每次读取当前用户代理：静态代理显式绑定，PAC/WPAD 使用自动解析。
+//! 只有带 GitHub SHA-256 digest 或官方发布校验清单的 exe 资产才会
 //! 被接受，避免把未校验的下载内容交给更新助手执行。
 
 use std::{
@@ -16,12 +16,13 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        Foundation::{CloseHandle, GlobalFree, HGLOBAL, WAIT_OBJECT_0},
         Networking::WinHttp::{
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER,
-            WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ACCESS_TYPE_NAMED_PROXY, WINHTTP_CURRENT_USER_IE_PROXY_CONFIG,
+            WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle,
+            WinHttpConnect, WinHttpGetIEProxyConfigForCurrentUser, WinHttpOpen, WinHttpOpenRequest,
             WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-            WinHttpSendRequest,
+            WinHttpSendRequest, WinHttpSetTimeouts,
         },
         System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
     },
@@ -33,6 +34,7 @@ const UPDATE_LIMIT: usize = 256 * 1024 * 1024;
 const PARALLEL_DOWNLOAD_THRESHOLD: u64 = 8 * 1024 * 1024;
 const PARALLEL_DOWNLOAD_PARTS: u64 = 4;
 const UPDATE_ASSET_SUFFIX: &str = "-windows-x64.exe";
+const DEFAULT_REPOSITORY: &str = "akitten-cn/codex-quota-glance";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseInfo {
@@ -62,6 +64,10 @@ pub enum UpdateError {
     Http(String),
     #[error("更新服务返回 HTTP {0}")]
     HttpStatus(u32),
+    #[error("GitHub 请求频率受限（HTTP {0}）；请稍后重试，或切换代理节点后再试")]
+    RateLimited(u32),
+    #[error("GitHub 拒绝访问（HTTP 403）；请检查系统代理规则是否包含 api.github.com 和 GitHub 下载域名")]
+    Forbidden,
     #[error("更新响应超过安全大小限制")]
     ResponseTooLarge,
     #[error("更新清单无法解析：{0}")]
@@ -102,16 +108,42 @@ impl Drop for InternetHandle {
 }
 
 pub fn configured_repository() -> Option<String> {
-    std::env::var("CODEX_TASKBAR_UPDATE_REPOSITORY")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| option_env!("CODEX_TASKBAR_UPDATE_REPOSITORY").map(str::to_owned))
+    Some(repository_from(
+        std::env::var("CODEX_TASKBAR_UPDATE_REPOSITORY").ok().as_deref(),
+        option_env!("CODEX_TASKBAR_UPDATE_REPOSITORY"),
+    ))
+}
+
+fn repository_from(runtime: Option<&str>, build: Option<&str>) -> String {
+    runtime
+        .into_iter()
+        .chain(build)
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_REPOSITORY)
+        .to_owned()
 }
 
 pub fn check_latest(repository: Option<&str>) -> Result<UpdateStatus, UpdateError> {
     let repository = normalize_repository(repository.ok_or(UpdateError::RepositoryMissing)?)?;
     let url = format!("https://api.github.com/repos/{repository}/releases/latest");
-    let bytes = http_get(&url, RELEASE_API_LIMIT)?;
+    let bytes = match http_get(&url, RELEASE_API_LIMIT) {
+        Ok(bytes) => bytes,
+        Err(UpdateError::RateLimited(_) | UpdateError::Forbidden) => {
+            tracing::info!(event = "update_checksum_fallback", "GitHub API 受限，读取官方发布校验清单");
+            let bytes = http_get(
+                &format!("https://github.com/{repository}/releases/latest/download/SHA256SUMS.txt"),
+                RELEASE_API_LIMIT,
+            )?;
+            let release = release_from_checksums(&repository, &bytes)?;
+            return Ok(if is_newer(&release.version, env!("CARGO_PKG_VERSION")) {
+                UpdateStatus::Available(release)
+            } else {
+                UpdateStatus::Current
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let release: GithubRelease =
         serde_json::from_slice(&bytes).map_err(|error| UpdateError::InvalidManifest(error.to_string()))?;
     let version = release.tag_name.trim_start_matches(['v', 'V']).to_owned();
@@ -133,6 +165,45 @@ pub fn check_latest(repository: Option<&str>) -> Result<UpdateStatus, UpdateErro
         sha256,
         notes: release.body.filter(|body| !body.trim().is_empty()),
     }))
+}
+
+// 官方发布工作流生成的 HTTPS 校验清单；固定资产和版本，仍强制验证摘要。
+fn release_from_checksums(repository: &str, bytes: &[u8]) -> Result<ReleaseInfo, UpdateError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| UpdateError::InvalidManifest("校验清单编码无效".into()))?;
+    let mut found = None;
+    for line in text.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() != 2 {
+            continue;
+        }
+        let name = fields[1].trim_start_matches('*');
+        let Some(version) = name.strip_prefix("codex-taskbar-").and_then(|name| name.strip_suffix(UPDATE_ASSET_SUFFIX))
+        else {
+            continue;
+        };
+        let parts: Vec<_> = version.split('.').collect();
+        if parts.len() != 3
+            || parts.iter().any(|part| {
+                part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()) || part.parse::<u64>().is_err()
+            })
+        {
+            return Err(UpdateError::InvalidManifest("校验清单版本无效".into()));
+        }
+        if found.is_some() {
+            return Err(UpdateError::InvalidManifest("校验清单包含重复资产".into()));
+        }
+        let sha256 = parse_sha256_digest(&format!("sha256:{}", fields[0])).ok_or(UpdateError::DigestMissing)?;
+        let tag = format!("v{version}");
+        found = Some(ReleaseInfo {
+            version: version.into(),
+            download_url: format!("https://github.com/{repository}/releases/download/{tag}/{name}"),
+            tag,
+            asset_name: name.into(),
+            sha256,
+            notes: None,
+        });
+    }
+    found.ok_or(UpdateError::AssetMissing)
 }
 
 pub fn download_and_stage(
@@ -224,13 +295,33 @@ fn wait_for_process_exit(pid: u32) {
 struct HttpResponse {
     status: u32,
     content_length: Option<u64>,
+    rate_limit_remaining: Option<u32>,
     bytes: Vec<u8>,
+}
+
+fn response_error(response: &HttpResponse) -> UpdateError {
+    let message = serde_json::from_slice::<serde_json::Value>(&response.bytes)
+        .ok()
+        .and_then(|value| value["message"].as_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default();
+    if matches!(response.status, 403 | 429)
+        && (response.status == 429
+            || response.rate_limit_remaining == Some(0)
+            || message.contains("rate limit")
+            || message.contains("abuse detection"))
+    {
+        UpdateError::RateLimited(response.status)
+    } else if response.status == 403 {
+        UpdateError::Forbidden
+    } else {
+        UpdateError::HttpStatus(response.status)
+    }
 }
 
 fn http_get(url: &str, limit: usize) -> Result<Vec<u8>, UpdateError> {
     let response = http_request(url, "GET", None, limit)?;
     if !(200..300).contains(&response.status) {
-        return Err(UpdateError::HttpStatus(response.status));
+        return Err(response_error(&response));
     }
     Ok(response.bytes)
 }
@@ -289,18 +380,77 @@ fn parallel_range_get(url: &str, length: u64, limit: usize) -> Result<Vec<u8>, U
     Ok(output)
 }
 
+#[derive(Default)]
+struct ProxySettings(WINHTTP_CURRENT_USER_IE_PROXY_CONFIG);
+
+impl ProxySettings {
+    fn current() -> Self {
+        let mut settings = Self::default();
+        if unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut settings.0) }.is_err() {
+            tracing::warn!(event = "update_proxy_read_failed", "无法读取用户代理，使用 WinHTTP 自动代理");
+        }
+        settings
+    }
+
+    fn uses_static(&self) -> bool {
+        !self.0.lpszProxy.is_null() && self.0.lpszAutoConfigUrl.is_null()
+    }
+}
+
+impl Drop for ProxySettings {
+    fn drop(&mut self) {
+        for pointer in [self.0.lpszProxy, self.0.lpszProxyBypass, self.0.lpszAutoConfigUrl] {
+            if !pointer.is_null() {
+                let _ = unsafe { GlobalFree(Some(HGLOBAL(pointer.0.cast()))) };
+            }
+        }
+    }
+}
+
 fn http_request(url: &str, method: &str, headers: Option<&str>, limit: usize) -> Result<HttpResponse, UpdateError> {
+    http_request_with_proxy(url, method, headers, limit, &ProxySettings::current())
+}
+
+fn http_request_with_proxy(
+    url: &str,
+    method: &str,
+    headers: Option<&str>,
+    limit: usize,
+    proxy: &ProxySettings,
+) -> Result<HttpResponse, UpdateError> {
     let (host, port, path) = parse_https_url(url)?;
     let agent = wide("Codex-Taskbar-Updater/1.0");
     let host_wide = wide(&host);
     let path_wide = wide(&path);
     let method_wide = wide(method);
+    // 自动代理可能在代理失败后回退直连。用户明确配置静态代理时绑定该代理，
+    // 也让设置变更在下一次检查、HEAD 和各下载分块上立即生效。
+    let mode = if proxy.uses_static() {
+        "system_static"
+    } else if !proxy.0.lpszAutoConfigUrl.is_null() {
+        "system_pac"
+    } else {
+        "system_auto"
+    };
+    tracing::info!(event = "update_request_started", proxy_mode = mode, method, "开始更新请求");
     let session = InternetHandle(unsafe {
-        WinHttpOpen(PCWSTR(agent.as_ptr()), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0)
+        if proxy.uses_static() {
+            WinHttpOpen(
+                PCWSTR(agent.as_ptr()),
+                WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+                PCWSTR(proxy.0.lpszProxy.0),
+                PCWSTR(proxy.0.lpszProxyBypass.0),
+                0,
+            )
+        } else {
+            WinHttpOpen(PCWSTR(agent.as_ptr()), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0)
+        }
     });
     if session.0.is_null() {
         return Err(UpdateError::Http("无法创建 WinHTTP 会话".into()));
     }
+    unsafe { WinHttpSetTimeouts(session.0, 10_000, 15_000, 30_000, 30_000) }
+        .map_err(|error| UpdateError::Http(error.to_string()))?;
     let connection = InternetHandle(unsafe { WinHttpConnect(session.0, PCWSTR(host_wide.as_ptr()), port, 0) });
     if connection.0.is_null() {
         return Err(UpdateError::Http("无法连接更新服务器".into()));
@@ -355,6 +505,22 @@ fn http_request(url: &str, method: &str, headers: Option<&str>, limit: usize) ->
     }
     .ok()
     .map(|()| u64::from(content_length_value));
+    let rate_header = wide("X-RateLimit-Remaining");
+    let mut rate_value = 0_u32;
+    let mut rate_size = std::mem::size_of::<u32>() as u32;
+    let rate_limit_remaining = unsafe {
+        WinHttpQueryHeaders(
+            request.0,
+            windows::Win32::Networking::WinHttp::WINHTTP_QUERY_CUSTOM | WINHTTP_QUERY_FLAG_NUMBER,
+            PCWSTR(rate_header.as_ptr()),
+            Some((&mut rate_value as *mut u32).cast()),
+            &mut rate_size,
+            std::ptr::null_mut(),
+        )
+    }
+    .ok()
+    .map(|()| rate_value);
+    tracing::info!(event = "update_response", proxy_mode = mode, status, rate_limit_remaining, "收到更新响应");
     let mut output = Vec::new();
     loop {
         let mut available = 0_u32;
@@ -373,7 +539,7 @@ fn http_request(url: &str, method: &str, headers: Option<&str>, limit: usize) ->
             .map_err(|error| UpdateError::Http(error.to_string()))?;
         output.truncate(start + read as usize);
     }
-    Ok(HttpResponse { status, content_length, bytes: output })
+    Ok(HttpResponse { status, content_length, rate_limit_remaining, bytes: output })
 }
 
 fn parse_https_url(url: &str) -> Result<(String, u16, String), UpdateError> {
@@ -412,7 +578,7 @@ fn normalize_repository(value: &str) -> Result<String, UpdateError> {
 
 fn parse_sha256_digest(value: &str) -> Option<[u8; 32]> {
     let hex = value.strip_prefix("sha256:")?;
-    if hex.len() != 64 {
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let mut bytes = [0_u8; 32];
@@ -441,6 +607,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_build_has_repository_and_overrides_remain_supported() {
+        assert_eq!(repository_from(None, None), DEFAULT_REPOSITORY);
+        assert_eq!(repository_from(Some(" "), Some("")), DEFAULT_REPOSITORY);
+        assert_eq!(repository_from(Some("custom/repo"), Some("build/repo")), "custom/repo");
+        assert_eq!(repository_from(None, Some("build/repo")), "build/repo");
+    }
+
+    #[test]
+    fn distinguishes_github_rate_limits_from_proxy_denials_without_exposing_body() {
+        let mut response = HttpResponse {
+            status: 403,
+            content_length: None,
+            rate_limit_remaining: None,
+            bytes: br#"{"message":"API rate limit exceeded for private-ip"}"#.to_vec(),
+        };
+        assert!(matches!(response_error(&response), UpdateError::RateLimited(403)));
+        assert!(!response_error(&response).to_string().contains("private-ip"));
+        response.bytes = b"<html>Forbidden</html>".to_vec();
+        assert!(matches!(response_error(&response), UpdateError::Forbidden));
+        response.rate_limit_remaining = Some(0);
+        assert!(matches!(response_error(&response), UpdateError::RateLimited(403)));
+        response.status = 404;
+        assert!(matches!(response_error(&response), UpdateError::HttpStatus(404)));
+    }
+
+    #[test]
+    #[ignore = "需要外网；只读取公开发布清单，不下载或安装"]
+    fn external_latest_release_uses_current_system_proxy() {
+        let status = check_latest(configured_repository().as_deref()).unwrap();
+        println!("公开更新检查成功：{status:?}");
+    }
+
+    #[test]
+    #[ignore = "需要外网；下载官方资产到内存并校验，不执行安装包"]
+    fn external_release_download_matches_official_checksum() {
+        let bytes = http_get(
+            &format!("https://github.com/{DEFAULT_REPOSITORY}/releases/latest/download/SHA256SUMS.txt"),
+            RELEASE_API_LIMIT,
+        )
+        .unwrap();
+        let release = release_from_checksums(DEFAULT_REPOSITORY, &bytes).unwrap();
+        let bytes = download_asset(&release.download_url, UPDATE_LIMIT, true).unwrap();
+        assert_eq!(<[u8; 32]>::from(Sha256::digest(&bytes)), release.sha256);
+        println!("官方安装包下载及校验成功：{}，{} 字节（未执行）", release.asset_name, bytes.len());
+    }
+
+    #[test]
+    fn official_checksum_fallback_pins_asset_and_rejects_ambiguous_or_malicious_names() {
+        let line = format!("{}  codex-taskbar-0.2.6-windows-x64.exe\n", "ab".repeat(32));
+        let release = release_from_checksums(DEFAULT_REPOSITORY, line.as_bytes()).unwrap();
+        assert_eq!(release.sha256, [0xab; 32]);
+        assert!(release.download_url.ends_with("/releases/download/v0.2.6/codex-taskbar-0.2.6-windows-x64.exe"));
+        assert!(release_from_checksums(DEFAULT_REPOSITORY, line.repeat(2).as_bytes()).is_err());
+        assert!(release_from_checksums(DEFAULT_REPOSITORY, line.replace("0.2.6", "../../evil").as_bytes()).is_err());
+        assert!(release_from_checksums(DEFAULT_REPOSITORY, line.replace("ab", "zz").as_bytes()).is_err());
+    }
+
+    #[test]
     fn normalizes_supported_repository_inputs() {
         assert_eq!(normalize_repository("owner/repo").unwrap(), "owner/repo");
         assert_eq!(normalize_repository("https://github.com/owner/repo.git").unwrap(), "owner/repo");
@@ -459,6 +683,7 @@ mod tests {
         let value = format!("sha256:{}", "ab".repeat(32));
         assert_eq!(parse_sha256_digest(&value), Some([0xab; 32]));
         assert_eq!(parse_sha256_digest("sha512:abcd"), None);
+        assert_eq!(parse_sha256_digest(&format!("sha256:{}", "中".repeat(20) + "abcd")), None);
     }
 
     #[test]

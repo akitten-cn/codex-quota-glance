@@ -9,7 +9,8 @@ mod connection;
 fn connection_message(code: &str) -> &'static str {
     match code {
         "healthy" => "Codex 连接已建立",
-        "cli_not_found" => "未找到 Codex 程序；请打开已安装的 Codex/ChatGPT 后点刷新",
+        "cli_not_found" => "未找到可用的 Codex CLI；请检查 Codex 安装位置后点刷新，仍失败可导出诊断",
+        "cli_path_invalid" => "配置的 Codex CLI 路径无效；请检查路径配置后点刷新",
         "cli_probe_failed" => "已发现 Codex，但启动验证失败或超时；请查看脱敏诊断",
         "disconnected" => "Codex 连接中断，正在重试",
         "degraded" => "Codex 连接已建立，但部分账号接口读取失败",
@@ -20,6 +21,11 @@ fn connection_message(code: &str) -> &'static str {
 
 fn publish_health(report: &Value) -> std::io::Result<()> {
     let code = report["code"].as_str().unwrap_or("discovering");
+    if matches!(code, "cli_not_found" | "cli_path_invalid" | "cli_probe_failed" | "disconnected" | "degraded") {
+        tracing::warn!(event = "macos_connection_health", code, "Codex 连接状态变化");
+    } else {
+        tracing::info!(event = "macos_connection_health", code, "Codex 连接状态变化");
+    }
     send(json!({"kind":"health","code":code,"message":connection_message(code)}))
 }
 
@@ -106,6 +112,7 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = root.join("settings.json");
     let mut settings = AppConfig::load_or_create(&path)?;
     let (_guard, log_reload) = codex_taskbar_diagnostics::init_with_reload(&root.join("logs"), settings.log_level)?;
+    tracing::info!(event = "macos_engine_started", version = env!("CARGO_PKG_VERSION"), log_level = %settings.log_level, "Mac 数据引擎已启动");
     let _ = codex_taskbar_diagnostics::prune_old_logs(&root.join("logs"), settings.log_retention_days);
     let ledger_path = local_usage_ledger_path(&path);
     let mut ledger = load_local_usage_ledger(&ledger_path)?;
@@ -132,7 +139,12 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let smoke = std::env::var_os("CODEX_TASKBAR_SMOKE_TEST").is_some();
     let mut session: Option<CodexSession> = None;
     let (_, mut updates) = mpsc::channel::<SessionUpdate>();
-    let mut discovery: Option<mpsc::Receiver<connection::Discovery>> = None;
+    let mut discovery: Option<mpsc::Receiver<(Vec<PathBuf>, connection::Discovery)>> = None;
+    let mut desktop_bundles = std::env::var("CODEX_TASKBAR_DESKTOP_BUNDLES")
+        .ok()
+        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .and_then(|value| connection::desktop_bundles(&value))
+        .unwrap_or_default();
     let mut last_discovery = Instant::now() - Duration::from_secs(30);
     if smoke {
         health = json!({"code":"smoke_isolated"});
@@ -157,6 +169,9 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 match command["action"].as_str().unwrap_or("") {
                     "quit" => return Ok(()),
                     "refresh-details" | "manual-refresh" => {
+                        if let Some(bundles) = connection::desktop_bundles(&command["desktop_bundles"]) {
+                            desktop_bundles = bundles;
+                        }
                         if let Some(s) = &session
                             && healthy
                         {
@@ -169,6 +184,16 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                         last_fallback = Instant::now() - ECONOMY_FALLBACK_POLL_INTERVAL;
                         dirty = true;
+                    }
+                    "desktop-bundles" => {
+                        if let Some(bundles) = connection::desktop_bundles(&command["desktop_bundles"])
+                            && bundles != desktop_bundles
+                        {
+                            desktop_bundles = bundles;
+                            if session.is_none() {
+                                last_discovery = Instant::now() - Duration::from_secs(30);
+                            }
+                        }
                     }
                     "save-settings" => {
                         let saved = updated_settings(&settings, &command["settings"]).and_then(|next| {
@@ -184,16 +209,21 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 settings = next;
                                 ledger.set_retention_days(usize::from(settings.history_retention_days));
                                 log_reload.reload(settings.log_level)?;
+                                tracing::info!(event = "macos_settings_saved", log_level = %settings.log_level, "已保存并应用设置");
                                 send(
                                     json!({"kind":"settings-result","ok":true,"message":"已保存并应用到本机 SQLite"}),
                                 )?;
                                 dirty = true;
                             }
-                            Err(message) => send(json!({"kind":"settings-result","ok":false,"message":message}))?,
+                            Err(message) => {
+                                tracing::warn!(event = "macos_settings_save_failed", "设置保存失败");
+                                send(json!({"kind":"settings-result","ok":false,"message":message}))?;
+                            }
                         }
                     }
                     "clear-history" => {
                         if ledger.clear_and_save(&ledger_path).is_err() {
+                            tracing::warn!(event = "local_usage_history_clear_failed", "账本清理写入失败");
                             send(
                                 json!({"kind":"settings-result","ok":false,"message":"账本写入失败，原历史已保留，请稍后重试"}),
                             )?;
@@ -204,13 +234,15 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             observed_at_unix_ms: now_unix_ms(),
                         });
                         dirty = true;
+                        tracing::info!(event = "local_usage_history_cleared", "已清理本机聚合记录");
                         send(
                             json!({"kind":"settings-result","ok":true,"message":"已清理本机聚合记录；后续仅记录新的消耗"}),
                         )?;
                     }
                     "export-diagnostics" => {
-                        let report = json!({"platform":"macos","version":env!("CARGO_PKG_VERSION"),"build":"2026-09-04-r2","cli_available":session.is_some(),"connection":health,"settings":layout_settings(&settings),"ledger_days":ledger.persisted().days.len()});
+                        let report = json!({"platform":"macos","version":env!("CARGO_PKG_VERSION"),"build":"2026-10-22-update-logging","cli_available":session.is_some(),"connection":health,"settings":layout_settings(&settings),"ledger_days":ledger.persisted().days.len()});
                         std::fs::write(root.join("diagnostics.json"), serde_json::to_vec_pretty(&report)?)?;
+                        tracing::info!(event = "macos_diagnostics_exported", "已导出脱敏诊断");
                         send(json!({"kind":"diagnostics-exported"}))?;
                     }
                     "snapshot" => dirty = true,
@@ -222,13 +254,15 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let (tx, rx) = mpsc::channel();
                 let home = home.clone();
                 let codex_home = codex_home.clone();
+                let desktop_bundles = desktop_bundles.clone();
                 let manual = settings
                     .codex_cli_path
                     .clone()
                     .map(PathBuf::from)
                     .or_else(|| std::env::var_os("CODEX_CLI_PATH").map(PathBuf::from));
                 std::thread::spawn(move || {
-                    let _ = tx.send(connection::discover(&home, &codex_home, manual));
+                    let result = connection::discover(&home, &codex_home, manual, &desktop_bundles);
+                    let _ = tx.send((desktop_bundles, result));
                 });
                 discovery = Some(rx);
                 last_discovery = Instant::now();
@@ -236,17 +270,22 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 publish_health(&health)?;
                 dirty = true;
             }
-            if let Some(result) = discovery.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            if let Some((searched_bundles, result)) = discovery.as_ref().and_then(|rx| rx.try_recv().ok()) {
                 discovery = None;
-                health = result.report;
-                last_discovery = Instant::now();
-                if let Some(config) = result.config {
-                    let (s, u) = CodexSession::start_process(config, CodexSessionConfig::default());
-                    session = Some(s);
-                    updates = u;
+                if searched_bundles != desktop_bundles {
+                    // 查找期间打开了 Codex 或点了刷新，立即使用新位置重查，不发布过期失败。
+                    last_discovery = Instant::now() - Duration::from_secs(30);
+                } else {
+                    health = result.report;
+                    last_discovery = Instant::now();
+                    if let Some(config) = result.config {
+                        let (s, u) = CodexSession::start_process(config, CodexSessionConfig::default());
+                        session = Some(s);
+                        updates = u;
+                    }
+                    publish_health(&health)?;
+                    dirty = true;
                 }
-                publish_health(&health)?;
-                dirty = true;
             }
             for update in updates.try_iter() {
                 let code = match update.source_health {
@@ -344,6 +383,12 @@ pub fn run_bridge() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     flush_local_usage_ledger(&ledger_path, &mut ledger);
     if let Some(session) = session {
         session.stop();
+    }
+    if result.is_err() {
+        // 不记录错误正文，避免数据库错误中的完整用户路径进入日志。
+        tracing::error!(event = "macos_engine_failed", "Mac 数据引擎异常退出");
+    } else {
+        tracing::info!(event = "macos_engine_stopped", "Mac 数据引擎已正常退出");
     }
     result
 }

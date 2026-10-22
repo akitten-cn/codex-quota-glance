@@ -4,6 +4,7 @@
 //! 它不启动 codex 进程；进程生命周期和其余 I/O 由上层负责。
 
 mod activity;
+mod auth_watch;
 pub mod locator;
 mod protocol;
 mod quota;

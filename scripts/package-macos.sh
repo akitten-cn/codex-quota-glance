@@ -18,7 +18,7 @@ version="$(cargo metadata --no-deps --format-version 1 | /usr/bin/python3 -c 'im
 assets="$(mktemp -d "$PWD/dist/macos-assets.XXXXXX")"
 swift scripts/macos-assets.swift "$assets"
 iconutil -c icns "$assets/AppIcon.iconset" -o "$app/Contents/Resources/AppIcon.icns"
-swiftc -swift-version 5 -O -target "$arch-apple-macos12.0" -framework AppKit -framework WebKit apps/macos-host/main.swift -o "$app/Contents/MacOS/CodexTaskbar"
+swiftc -swift-version 5 -O -target "$arch-apple-macos12.0" -framework AppKit -framework WebKit apps/macos-host/WindowPlacement.swift apps/macos-host/HostDiagnostics.swift apps/macos-host/UpdateService.swift apps/macos-host/main.swift -o "$app/Contents/MacOS/CodexTaskbar"
 cp prototypes/fluid-front-reference.html prototypes/details-card-reference.html prototypes/settings-layout-reference.html prototypes/taskbar-visual-contract.js "$app/Contents/Resources/"
 cp prototypes/macos-layout.css "$app/Contents/Resources/"
 cp docs/macos-testing.md "$app/Contents/Resources/测试说明.md"

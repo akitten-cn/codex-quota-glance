@@ -60,6 +60,8 @@ impl MonitorState {
         self.weekly = QuotaWindowState::default();
         self.token_usage = TokenUsageState::default();
         self.official = None;
+        // 新进程/账户从新的 revision 序列开始；时间戳仍保留以拒绝旧快照。
+        self.revision = 0;
     }
 
     /// 原子应用一份 App Server 完整快照。

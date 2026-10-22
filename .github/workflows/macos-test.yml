@@ -25,8 +25,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Shared data and platform tests
         run: cargo test --workspace --locked
+      - name: Popup placement regressions
+        run: |
+          swiftc apps/macos-host/WindowPlacement.swift scripts/macos-placement-tests.swift -o "$RUNNER_TEMP/placement-tests"
+          "$RUNNER_TEMP/placement-tests"
       - name: Build app and test packages
         run: bash scripts/package-macos.sh
+      - name: Update and host logging regressions
+        run: |
+          swiftc -swift-version 5 apps/macos-host/UpdateService.swift apps/macos-host/HostDiagnostics.swift scripts/macos-update-tests.swift -o "$RUNNER_TEMP/update-tests"
+          "$RUNNER_TEMP/update-tests"
       - name: WKWebView and settings persistence smoke
         timeout-minutes: 3
         run: |
@@ -41,6 +49,7 @@ jobs:
           wait "$host_pid"
           kill "$diagnostic_pid" 2>/dev/null || true
           test -f "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json"
+          test -n "$(find "$CODEX_TASKBAR_DATA_DIR/logs" -name 'codex-taskbar.jsonl*' -size +0c -print -quit)"
           cp "$CODEX_TASKBAR_DATA_DIR/macos-smoke-results.json" dist/
           cp "$CODEX_TASKBAR_DATA_DIR"/smoke-*.png dist/ 2>/dev/null || true
       - name: Upload packages and smoke screenshots

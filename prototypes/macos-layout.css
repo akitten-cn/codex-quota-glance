@@ -41,3 +41,6 @@ html.mac-layout.settings-embed .side-foot { font-size:9px; }
   html.mac-layout.settings-embed nav { grid-template-columns:repeat(3,1fr); gap:2px; }
   html.mac-layout.settings-embed .content { padding-top:8px; }
 }
+/* 弹窗位于胶囊下方时，箭头向上，并在窗口顶部预留箭头空间。 */
+html.mac-layout.consume-embed.mac-popup-below .consume-popover { top:11px; bottom:auto; }
+html.mac-layout.consume-embed.mac-popup-below .consume-popover::after { top:-10px; bottom:auto; transform:translateX(-50%) rotate(180deg); }

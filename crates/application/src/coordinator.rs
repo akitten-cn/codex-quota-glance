@@ -144,7 +144,7 @@ mod tests {
             five_hour: Some(QuotaValue::from_used_percent(10.0, Some(300), None)),
             weekly: Some(QuotaValue::from_used_percent(20.0, Some(10_080), None)),
             observed_at_unix_ms: 100,
-            revision: 1,
+            revision: 99,
         }));
         coordinator.apply(TelemetryUpdate::TokenUsage(Box::new(TokenUsageSnapshot {
             current_thread: Some(TokenCounts { total: Some(12), ..TokenCounts::default() }),
@@ -163,5 +163,17 @@ mod tests {
         assert!(coordinator.state().weekly.last_known.is_none());
         assert_eq!(coordinator.state().token_usage, Default::default());
         assert_eq!(coordinator.state().activity, ActivityState::Executing);
+        assert!(coordinator.apply(TelemetryUpdate::RateLimits(RateLimitSnapshot {
+            five_hour: Some(QuotaValue::from_used_percent(70.0, Some(300), None)),
+            weekly: None,
+            observed_at_unix_ms: 200,
+            revision: 1,
+        })));
+        assert!(!coordinator.apply(TelemetryUpdate::RateLimits(RateLimitSnapshot {
+            five_hour: Some(QuotaValue::from_used_percent(10.0, Some(300), None)),
+            weekly: None,
+            observed_at_unix_ms: 100,
+            revision: 99,
+        })));
     }
 }

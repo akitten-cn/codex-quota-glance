@@ -8,6 +8,20 @@ func json(_ value: Any) -> String {
     return text.replacingOccurrences(of: "<", with: "\\u003c").replacingOccurrences(of: ">", with: "\\u003e")
 }
 
+// 使用应用身份和 Launch Services 的真实位置，兼容改名、非 /Applications 安装及多个客户端并存。
+func codexDesktopBundles() -> [String] {
+    let identifiers = ["com.openai.codex", "com.openai.chat"]
+    let workspace = NSWorkspace.shared
+    var urls = workspace.runningApplications.compactMap { app -> URL? in
+        guard let url = app.bundleURL,
+              identifiers.contains(app.bundleIdentifier ?? "") || ["Codex.app", "ChatGPT.app"].contains(url.lastPathComponent) else { return nil }
+        return url
+    }
+    urls += identifiers.compactMap { workspace.urlForApplication(withBundleIdentifier: $0) }
+    var seen = Set<String>()
+    return urls.map { $0.standardizedFileURL.path }.filter { seen.insert($0).inserted }
+}
+
 // 未激活的 accessory 应用也要将首击交给网页，不能吞成一次窗口激活。
 final class ClickThroughWebView: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -119,11 +133,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var smokeFrames = 0
     var smokePosition: NSPoint?
     var connectionHealth: [String: Any] = [:]
+    let updater = MacUpdateService()
+    lazy var diagnostics = HostDiagnostics(root: dataRoot)
     var dataRoot: URL {
         if let path = ProcessInfo.processInfo.environment["CODEX_TASKBAR_DATA_DIR"] { return URL(fileURLWithPath: path) }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("CodexTaskbar")
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        diagnostics.record("info", "macos_host_started")
         if smoke { fputs("smoke: didFinishLaunching entered\n", stderr) }
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -137,6 +154,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             return event
         }
         startEngine()
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.send(["action":"desktop-bundles", "desktop_bundles":codexDesktopBundles()])
+        })
         if smoke {
             fputs("smoke: host launched\n", stderr)
             DispatchQueue.main.asyncAfter(deadline: .now() + 7) { self.runSmoke() }
@@ -149,10 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/codex-taskbar-engine")
         process.arguments = ["--macos-bridge"]
         var environment = ProcessInfo.processInfo.environment
-        if let bundled = NSWorkspace.shared.runningApplications.compactMap({ $0.bundleURL })
-            .first(where: { ["Codex.app", "ChatGPT.app"].contains($0.lastPathComponent) }) {
-            environment["CODEX_TASKBAR_BUNDLED_CLI"] = bundled.appendingPathComponent("Contents/Resources/codex").path
-        }
+        environment["CODEX_TASKBAR_DESKTOP_BUNDLES"] = json(codexDesktopBundles())
         environment["PATH"] = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin") + ":/opt/homebrew/bin:/usr/local/bin:" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path
         if smoke {
             environment["CODEX_TASKBAR_SMOKE_TEST"] = "1"
@@ -162,9 +179,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         process.standardError = FileHandle.standardError
         process.terminationHandler = { [weak self] child in DispatchQueue.main.async {
             guard let self = self, !self.quitting else { return }
+            self.diagnostics.record("error", "macos_engine_exited", ["status":child.terminationStatus])
             self.alert("数据引擎已退出（\(child.terminationStatus)），请重新打开软件。")
         } }
-        do { try process.run(); engine = process; if smoke { fputs("smoke: engine spawned\n", stderr) } } catch { alert("数据引擎启动失败：\(error.localizedDescription)"); return }
+        do { try process.run(); engine = process; if smoke { fputs("smoke: engine spawned\n", stderr) } } catch {
+            diagnostics.record("error", "macos_engine_launch_failed", ["code":(error as NSError).code])
+            alert("数据引擎启动失败，请检查应用是否完整并查看 logs 目录。"); return
+        }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             var pending = Data()
@@ -184,6 +205,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
     func send(_ command: [String: Any]) {
+        var command = command
+        if ["refresh-details", "manual-refresh"].contains(command["action"] as? String ?? "") {
+            command["desktop_bundles"] = codexDesktopBundles()
+        }
         guard engine?.isRunning == true, let bytes = (json(command) + "\n").data(using: .utf8) else { return }
         try? input.fileHandleForWriting.write(contentsOf: bytes)
     }
@@ -196,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             let first = settings.isEmpty
             if first && smoke { fputs("smoke: first engine snapshot\n", stderr) }
             settings = next
+            diagnostics.setLevel(next["log_level"] as? String ?? "info")
             if first { createTaskbar() }
             if changed { placeTaskbar(restore: first); applyVisualSettings() }
             if let value = payload["taskbar"] { surfaces["taskbar"]?.emit(value) }
@@ -238,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if role == "popup", let value = self.popup { surface.emit(value) }
             if role == "settings" { surface.emit(self.connectionHealth) }
             self.applyVisualSettings()
+            if role != "taskbar" { self.anchored(surface) }
             // 初始演示数据在窗口可见前被真实快照替换。
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { if surface.desiredVisible { surface.reveal(activate: role == "settings") } }
         }
@@ -253,13 +280,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             guard let self = self else { return }
             self.clamp(surface.panel)
             UserDefaults.standard.set(NSStringFromRect(surface.panel.frame), forKey: "floatingFrame")
+            self.reanchorVisibleSurfaces()
         }
     }
     // visibleFrame 已是逻辑点。不能用 backingScaleFactor 或截图像素再次缩放。
     func fittedSize(_ role: String, work: NSRect? = nil) -> NSSize {
         let area = work ?? (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let preferred = role == "details" ? NSSize(width: 820, height: 550) : NSSize(width: 880, height: 640)
+        let preferred = role == "details" ? NSSize(width: 820, height: 550)
+            : role == "popup" ? NSSize(width: 600, height: 130) : NSSize(width: 880, height: 640)
         return NSSize(width: min(preferred.width, max(1, area.width - 32)),
                       height: min(preferred.height, max(1, area.height - 48)))
     }
@@ -281,6 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         surface.panel.setFrame(rect, display: true); clamp(surface.panel)
         savePosition()
+        reanchorVisibleSurfaces()
     }
     func savePosition() {
         if let panel = surfaces["taskbar"]?.panel { UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: "floatingFrame") }
@@ -300,13 +330,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         for surface in surfaces.values { surface.web.evaluateJavaScript("window.__macReduceMotion=\(settings["reduce_motion"] as? Bool == true ? "true" : "false");document.documentElement.classList.toggle('mac-reduce-motion',window.__macReduceMotion);", completionHandler: nil) }
     }
     func anchored(_ surface: Surface) {
-        guard let bar = surfaces["taskbar"]?.panel else { return }
-        var rect = surface.panel.frame
-        rect.origin = NSPoint(x: bar.frame.midX - rect.width / 2, y: bar.frame.maxY + 10)
-        surface.panel.setFrame(rect, display: true); clamp(surface.panel)
+        guard let bar = surfaces["taskbar"]?.panel,
+              let work = (bar.screen ?? targetScreen())?.visibleFrame,
+              let placement = anchoredPlacement(size: fittedSize(surface.role, work: work), anchor: bar.frame, work: work) else {
+            surface.hide(); return
+        }
+        surface.panel.setFrame(placement.frame, display: true)
         if surface.role == "popup" {
-            let arrow = max(24, min(rect.width - 24, bar.frame.midX - surface.panel.frame.minX))
-            surface.web.evaluateJavaScript("document.querySelector('.consume-popover')?.style.setProperty('--arrow-x','\(arrow)px')", completionHandler: nil)
+            let arrow = max(24, min(placement.frame.width - 24, bar.frame.midX - placement.frame.minX))
+            surface.web.evaluateJavaScript("document.documentElement.classList.toggle('mac-popup-below',\(!placement.above));document.querySelector('.consume-popover')?.style.setProperty('--arrow-x','\(arrow)px')", completionHandler: nil)
+        }
+    }
+    func reanchorVisibleSurfaces() {
+        for role in ["details", "popup", "settings"] {
+            if let surface = surfaces[role], surface.panel.isVisible { anchored(surface) }
         }
     }
     @objc func showDetails() {
@@ -322,9 +359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         surfaces["popup"]?.hide(); surfaces["details"]?.hide()
         if let existing = surfaces["settings"] {
             existing.desiredVisible = true; existing.panel.setContentSize(fittedSize("settings"))
-            let work = (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame
-            if let work = work { existing.panel.setFrameOrigin(NSPoint(x: work.midX - existing.panel.frame.width / 2, y: work.midY - existing.panel.frame.height / 2)) }
-            clamp(existing.panel); existing.reveal(activate: true); return
+            anchored(existing); existing.reveal(activate: true); return
         }
         let work = (surfaces["taskbar"]?.panel.screen ?? targetScreen())?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let size = fittedSize("settings", work: work)
@@ -336,7 +371,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let css = "<style>html{color-scheme:light}html.settings-embed main{margin:0!important;width:100%!important;max-width:none!important;height:100%!important}.shell{box-shadow:none!important}.preview iframe{color-scheme:light}</style>"
         var html = resource("settings-layout-reference.html").replacingOccurrences(of: "<html", with: "<html class=\"settings-embed\"").replacingOccurrences(of: "</head>", with: css + "</head>")
         html = html.replacingOccurrences(of: "任务栏布局", with: "浮窗布局").replacingOccurrences(of: "任务栏宽度", with: "浮窗宽度").replacingOccurrences(of: "任务栏避让", with: "边缘偏移").replacingOccurrences(of: "默认优先放在副屏，并避让通知区域与 TrafficMonitor。", with: "桌面浮动显示，可直接拖动胶囊；无副屏时自动使用主屏。")
-        html = html.replacingOccurrences(of: "自动使用 Windows 系统代理 / PAC", with: "更新页面使用系统浏览器与本机网络设置")
+        html = html.replacingOccurrences(of: "自动使用 Windows 系统代理 / PAC", with: "自动使用 macOS 系统代理 / PAC")
+            .replacingOccurrences(of: "下载并安装", with: "下载并打开安装包")
+            .replacingOccurrences(of: "更新清单和安装包均需校验签名 / SHA-256；下载完成后由更新助手在程序退出后替换文件。", with: "下载后校验 SHA-256，再打开安装包；请手动完成拖放安装。")
+            .replacingOccurrences(of: "每天后台检查一次；发现新版本后显示更新说明，用户确认后下载、安装并重启。", with: "手动检查最新正式版本，按此 Mac 架构下载并打开 DMG 或 ZIP 安装包。")
+            .replacingOccurrences(of: "若本机代理未启用系统代理，提供明确的自定义代理入口，不猜测端口。", with: "使用 macOS 网络设置中的代理；API 受限时尝试官方发布校验清单。")
+            .replacingOccurrences(of: "</head>", with: "<script>document.addEventListener('DOMContentLoaded',()=>document.getElementById('chunkDownload')?.closest('.toggle-row')?.setAttribute('hidden',''));</script></head>")
         html = html.replacingOccurrences(of: "默认优先放在副屏[^<]*TrafficMonitor。", with: "桌面浮动显示，可直接拖动胶囊；无副屏时自动使用主屏。", options: .regularExpression)
             .replacingOccurrences(of: "任务栏", with: "浮窗")
             .replacingOccurrences(of: "</head>", with: "<style>[hidden]{display:none!important}input[type=range]{-webkit-appearance:none;height:5px;background:#c7dce4;border:0;border-radius:4px}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;border-radius:50%;background:#23adc2}</style></head>")
@@ -345,12 +385,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             .replacingOccurrences(of: "58 / previewScale", with: "44 / previewScale")
             .replacingOccurrences(of: " px", with: " pt")
         let surface = make("settings", size: size, html: html, bootstrap: bootstrap)
-        surface.panel.setFrameOrigin(NSPoint(x: work.midX - size.width / 2, y: work.midY - size.height / 2))
+        anchored(surface)
     }
     func showPopup() {
         popupTimer?.invalidate()
         let surface: Surface
-        if let existing = surfaces["popup"] { surface = existing; surface.desiredVisible = true; if let popup = popup { surface.emit(popup) }; surface.reveal() }
+        if let existing = surfaces["popup"] { surface = existing; surface.desiredVisible = true; if let popup = popup { surface.emit(popup) }; anchored(surface); surface.reveal() }
         else { surface = make("popup", size: NSSize(width: min(600, (targetScreen()?.visibleFrame.width ?? 1000) - 30), height: 130), html: fluid("consume-embed")) }
         anchored(surface)
         popupTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak surface] _ in surface?.hide() }
@@ -366,6 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             surfaces[role]?.panel.setContentSize(fittedSize(role))
         }
         for surface in surfaces.values { clamp(surface.panel) }
+        reanchorVisibleSurfaces()
         // 重建时注入最新的屏幕范围，不保留上一块屏幕的滑块上限。
         if surfaces["settings"]?.panel.isVisible == true { closeSettings(); showSettings() }
     }
@@ -378,8 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         case "show-menu": if let bar = surfaces["taskbar"] { menu().popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil); bar.panel.orderFrontRegardless() }
         case "show-history": showDetails()
         case "check-updates", "download-update":
-            NSWorkspace.shared.open(URL(string: "https://github.com/akitten-cn/codex-quota-glance/releases")!)
-            surfaces["settings"]?.emit(["kind":"settings-result","ok":true,"message":"Mac 测试版暂不自动安装更新，已打开版本发布页。"])
+            runUpdate(download: action == "download-update")
         case "save-settings":
             var command = body
             if var values = body["settings"] as? [String: Any] {
@@ -390,6 +430,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             send(command)
         case "refresh-details", "manual-refresh", "clear-history", "export-diagnostics": send(body)
         default: break
+        }
+    }
+    func runUpdate(download: Bool) {
+        let logger = diagnostics
+        let status: (String) -> Void = { [weak self] message in
+            self?.surfaces["settings"]?.emit(["kind":"settings-result", "ok":true, "message":message])
+        }
+        updater.run(download: download, root: dataRoot,
+                    current: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
+                    log: { logger.record($0, $1, $2) }, progress: status) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let url):
+                if let url = url {
+                    if NSWorkspace.shared.open(url) { status("安装包已下载并通过 SHA-256 校验，请在打开的安装包中完成安装。") }
+                    else { status("安装包已校验，请在 Finder 中打开安装。"); NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                }
+            case .failure(let error):
+                logger.record("warn", "macos_update_failed", ["code":error.code])
+                self.surfaces["settings"]?.emit(["kind":"settings-result", "ok":false, "message":error.localizedDescription])
+            }
         }
     }
     func menu() -> NSMenu {
@@ -451,8 +512,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             guard error == nil, let result = result as? [String: Any], result["width"] as? String == "283" else { self.alert("smoke: 设置重开后未持久化"); return }
             let acceptsFirstMouse = self.surfaces.values.allSatisfy { $0.web.acceptsFirstMouse(for: nil) }
             let positionPreserved = self.surfaces["taskbar"]?.panel.frame.origin == self.smokePosition
+            let capsuleUnobscured = self.surfaces["taskbar"].map { bar in
+                self.surfaces.filter { $0.key != "taskbar" && $0.value.panel.isVisible }
+                    .allSatisfy { !$0.value.panel.frame.intersects(bar.panel.frame) }
+            } ?? false
             guard acceptsFirstMouse, positionPreserved, result["freePosition"] as? Bool == true else { self.alert("smoke: 首击策略、位置恢复或浮窗设置检查失败"); return }
-            let report: [String: Any] = ["ok":true,"settings_persisted":true,"first_mouse_policy":acceptsFirstMouse,"position_preserved":positionPreserved,"engine_running":self.engine?.isRunning == true,"webviews":self.surfaces.count,"settings_layout":result]
+            guard capsuleUnobscured else { self.alert("smoke: 弹窗覆盖胶囊"); return }
+            let report: [String: Any] = ["ok":true,"capsule_unobscured":capsuleUnobscured,"settings_persisted":true,"first_mouse_policy":acceptsFirstMouse,"position_preserved":positionPreserved,"engine_running":self.engine?.isRunning == true,"webviews":self.surfaces.count,"settings_layout":result]
             do { try json(report).write(to: self.dataRoot.appendingPathComponent("macos-smoke-results.json"), atomically: true, encoding: .utf8) }
             catch { self.alert("smoke: 验收报告写入失败"); return }
             fputs("smoke: settings persisted, requesting quit\n", stderr)

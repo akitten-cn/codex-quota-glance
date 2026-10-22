@@ -202,8 +202,18 @@ pub fn start_session_with_factory<F>(
 where
     F: FnMut() -> Result<(AppServerTransport, mpsc::Receiver<TransportEvent>), SupervisorError> + Send + 'static,
 {
+    start_factory_with_control(factory, config, Arc::new(Cancellation::default()))
+}
+
+fn start_factory_with_control<F>(
+    factory: F,
+    config: CodexSessionConfig,
+    cancel: Arc<Cancellation>,
+) -> (CodexSession, mpsc::Receiver<SessionUpdate>)
+where
+    F: FnMut() -> Result<(AppServerTransport, mpsc::Receiver<TransportEvent>), SupervisorError> + Send + 'static,
+{
     let (updates_tx, updates_rx) = mpsc::channel();
-    let cancel = Arc::new(Cancellation::default());
     let worker_cancel = Arc::clone(&cancel);
     let join = thread::Builder::new()
         .name("codex-session".to_owned())
@@ -218,7 +228,12 @@ pub fn start_process(
     config: CodexSessionConfig,
 ) -> (CodexSession, mpsc::Receiver<SessionUpdate>) {
     let supervisor = AppServerSupervisor;
-    start_session_with_factory(move || supervisor.spawn(&process_config), config)
+    let cancel = Arc::new(Cancellation {
+        auth_watch: crate::auth_watch::auth_path(&process_config)
+            .map(|path| Mutex::new(crate::auth_watch::AuthWatch::new(path))),
+        ..Cancellation::default()
+    });
+    start_factory_with_control(move || supervisor.spawn(&process_config), config, cancel)
 }
 
 impl CodexSession {
@@ -286,6 +301,8 @@ impl Drop for CodexSession {
 struct Cancellation {
     cancelled: AtomicBool,
     refresh_requested: AtomicBool,
+    auth_reload_requested: AtomicBool,
+    auth_watch: Option<Mutex<crate::auth_watch::AuthWatch>>,
     wake: Condvar,
     lock: Mutex<()>,
 }
@@ -295,6 +312,8 @@ impl Default for Cancellation {
         Self {
             cancelled: AtomicBool::new(false),
             refresh_requested: AtomicBool::new(false),
+            auth_reload_requested: AtomicBool::new(false),
+            auth_watch: None,
             wake: Condvar::new(),
             lock: Mutex::new(()),
         }
@@ -312,12 +331,24 @@ impl Cancellation {
     }
 
     fn request_refresh(&self) {
+        if self.auth_watch.is_some() {
+            self.auth_reload_requested.store(true, Ordering::Release);
+        }
         self.refresh_requested.store(true, Ordering::Release);
         self.wake.notify_all();
     }
 
     fn take_refresh_requested(&self) -> bool {
         self.refresh_requested.swap(false, Ordering::AcqRel)
+    }
+
+    fn take_auth_reload(&self) -> bool {
+        let requested = self.auth_reload_requested.swap(false, Ordering::AcqRel);
+        let changed = self
+            .auth_watch
+            .as_ref()
+            .is_some_and(|watch| watch.lock().unwrap_or_else(|e| e.into_inner()).changed(Instant::now()));
+        requested || changed
     }
 
     fn wait(&self, duration: Duration) -> bool {
@@ -412,6 +443,23 @@ fn run_transport(
             emit_state(&updates, &state, health_stopped(&cancel), freshness, last_data, revision, endpoint_tracker);
             return;
         }
+        if cancel.take_auth_reload() {
+            cancel.take_refresh_requested();
+            transport.close().ok();
+            reset_account_generation(&mut state, &mut endpoint_tracker);
+            emit_state_with_reset(
+                &updates,
+                &state,
+                SourceHealth::Starting,
+                SessionFreshness::Unknown,
+                None,
+                revision,
+                endpoint_tracker,
+                true,
+            );
+            // 返回工厂层重新启动进程，确保 CLI 的内存登录缓存也重新加载。
+            return;
+        }
         // `RefreshRequested` 由原生宿主经运行时传到这里。不能只唤醒 Condvar：
         // transport 的事件循环并不在 Condvar 上等待，必须在这一层消费标记并
         // 执行完整聚合刷新，才能让详情卡片的“刷新”真正生效。
@@ -426,6 +474,7 @@ fn run_transport(
                 &mut health,
                 &mut freshness,
                 false,
+                &cancel,
                 &updates,
             );
             next_refresh = Instant::now() + config.refresh_interval;
@@ -445,6 +494,7 @@ fn run_transport(
                     &mut health,
                     &mut freshness,
                     false,
+                    &cancel,
                     &updates,
                 );
                 next_refresh = Instant::now() + config.refresh_interval;
@@ -477,6 +527,7 @@ fn run_transport(
                         &mut health,
                         &mut freshness,
                         true,
+                        &cancel,
                         &updates,
                     );
                     next_refresh = Instant::now() + config.refresh_interval;
@@ -537,6 +588,7 @@ fn run_transport(
                             &mut health,
                             &mut freshness,
                             false,
+                            &cancel,
                             &updates,
                         );
                     } else {
@@ -606,18 +658,61 @@ fn refresh(
     last_data: &mut Option<std::time::Instant>,
     health: &mut SourceHealth,
     freshness: &mut SessionFreshness,
-    reset_account_scoped_state: bool,
+    mut reset_account_scoped_state: bool,
+    cancel: &Cancellation,
     updates: &mpsc::Sender<SessionUpdate>,
 ) {
+    // 先读身份，再发送额度和账户用量请求，避免外部切换后聚合出“新账号 + 旧账号请求”。
+    let mut failed = false;
+    let mut succeeded = false;
+    match transport.request("account/read", Value::Object(Default::default())) {
+        Ok(response) => match response.recv_timeout(config.request_timeout) {
+            Ok(response) => {
+                let known_account = state.account.requires_openai_auth.is_some() || !state.account.fields.is_empty();
+                let previous_identity = account_identity(&state.account);
+                if apply_completed_response(
+                    state,
+                    endpoint_tracker,
+                    "account",
+                    OfficialEndpointKind::Account,
+                    &response,
+                    now_unix_ms(),
+                ) {
+                    if known_account && previous_identity != account_identity(&state.account) {
+                        let account = std::mem::take(&mut state.account);
+                        reset_account_generation(state, endpoint_tracker);
+                        state.account = account;
+                        endpoint_tracker.mark_live(OfficialEndpointKind::Account, now_unix_ms());
+                        reset_account_scoped_state = true;
+                    }
+                    *revision = revision.saturating_add(1);
+                    *last_data = Some(Instant::now());
+                    succeeded = true;
+                } else {
+                    failed = true;
+                }
+            }
+            Err(_) => {
+                endpoint_tracker.mark_failed(OfficialEndpointKind::Account);
+                failed = true;
+            }
+        },
+        Err(_) => {
+            endpoint_tracker.mark_failed(OfficialEndpointKind::Account);
+            failed = true;
+        }
+    }
+    // 身份读取失败时不能用其他账号来源的成功响应把旧身份重新标为当前账号。
+    if failed {
+        endpoint_tracker.mark_all_cached();
+    }
     let usage_params = crate::protocol::account_usage_read_params(preferred_usage_thread_id(state).as_deref());
     let requests = [
-        ("account/read", "account", OfficialEndpointKind::Account, Value::Object(Default::default())),
         ("account/rateLimits/read", "rate_limits", OfficialEndpointKind::Quota, Value::Object(Default::default())),
         ("account/usage/read", "usage", OfficialEndpointKind::Usage, usage_params),
     ];
     let mut pending = Vec::new();
-    let mut failed = false;
-    for (method, kind, endpoint, params) in requests {
+    for (method, kind, endpoint, params) in requests.into_iter().filter(|_| succeeded) {
         match transport.request(method, params) {
             Ok(response) => pending.push((kind, endpoint, response)),
             Err(_) => {
@@ -626,7 +721,6 @@ fn refresh(
             }
         }
     }
-    let mut succeeded = false;
     for (kind, endpoint, response) in pending {
         match response.recv_timeout(config.request_timeout) {
             Ok(response) => {
@@ -645,6 +739,11 @@ fn refresh(
             }
         }
     }
+    if cancel.take_auth_reload() {
+        // RPC 等待期间登录发生变化，丢弃整轮结果，让下一轮先清空并重建连接。
+        cancel.auth_reload_requested.store(true, Ordering::Release);
+        return;
+    }
     *health = if failed { SourceHealth::Degraded } else { SourceHealth::Healthy };
     *freshness = if succeeded { SessionFreshness::Fresh } else { freshness_for(*last_data, config.stale_after) };
     // 一轮刷新只发布一个聚合快照，避免 account → quota → usage 逐个到达时
@@ -659,6 +758,24 @@ fn refresh(
         *endpoint_tracker,
         reset_account_scoped_state,
     );
+}
+
+fn account_identity(account: &crate::state::AccountSnapshot) -> Vec<Option<Value>> {
+    [
+        "type",
+        "email",
+        "id",
+        "accountId",
+        "account_id",
+        "chatgptAccountId",
+        "chatgpt_account_id",
+        "workspaceId",
+        "workspace_id",
+        "organizationId",
+    ]
+    .into_iter()
+    .map(|key| account.get(key).cloned())
+    .collect()
 }
 
 /// 选择 `account/usage/read` 的可选 threadId。活动线程优先于最新 Token 通知：
@@ -809,6 +926,161 @@ mod tests {
     use codex_taskbar_domain::official::OfficialFreshness;
     use std::collections::VecDeque;
     use std::io;
+    use std::sync::atomic::AtomicUsize;
+
+    struct AccountWriter {
+        io: FakeIo,
+        epoch: Arc<AtomicUsize>,
+        fail_new_quota: bool,
+    }
+    impl std::io::Write for AccountWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            for line in bytes.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
+                let request: Value = serde_json::from_slice(line).unwrap();
+                let Some(id) = request.get("id") else { continue };
+                let epoch = self.epoch.load(Ordering::Acquire);
+                let method = request["method"].as_str().unwrap();
+                let result = match method {
+                    "initialize" => serde_json::json!({}),
+                    "account/read" => {
+                        serde_json::json!({"account":{"type":"chatgpt","id":format!("synthetic-{epoch}"),"email":format!("account-{epoch}@example.com")},"requiresOpenaiAuth":true})
+                    }
+                    "account/rateLimits/read" => {
+                        serde_json::json!({"rateLimits":{"primary":{"usedPercent":if epoch == 0 {20} else {70},"windowDurationMins":300}}})
+                    }
+                    "account/usage/read" => {
+                        serde_json::json!({"summary":{"lifetimeTokens":10+epoch},"dailyUsageBuckets":[]})
+                    }
+                    _ => serde_json::json!({}),
+                };
+                let response = if self.fail_new_quota && epoch > 0 && method != "account/read" && method != "initialize"
+                {
+                    serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"synthetic unavailable"}})
+                } else {
+                    serde_json::json!({"jsonrpc":"2.0","id":id,"result":result})
+                };
+                self.io.push(&(response.to_string() + "\n"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn account_transport(
+        epoch: Arc<AtomicUsize>,
+        fail_new_quota: bool,
+    ) -> (AppServerTransport, mpsc::Receiver<TransportEvent>) {
+        let io = FakeIo::default();
+        spawn_with_io(
+            FakeReader(io.clone()),
+            AccountWriter { io, epoch, fail_new_quota },
+            "test",
+            "0.1",
+            LineCodec::default(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+    }
+
+    fn wait_for_update(
+        updates: &mpsc::Receiver<SessionUpdate>,
+        predicate: impl Fn(&SessionUpdate) -> bool,
+    ) -> SessionUpdate {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            if let Ok(update) = updates.recv_timeout(Duration::from_millis(100)) {
+                if predicate(&update) {
+                    return update;
+                }
+            }
+        }
+        panic!("Expected session update did not arrive");
+    }
+
+    #[test]
+    fn external_login_change_restarts_cached_server_without_account_notification() {
+        let path =
+            std::env::temp_dir().join(format!("taskbar-external-login-{}-{}.json", std::process::id(), now_unix_ms()));
+        std::fs::write(&path, b"synthetic old login").unwrap();
+        let cancelled = Arc::new(Cancellation {
+            auth_watch: Some(Mutex::new(crate::auth_watch::AuthWatch::new(path.clone()))),
+            ..Cancellation::default()
+        });
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let counter = spawns.clone();
+        let (session, updates) = start_factory_with_control(
+            move || {
+                let generation = counter.fetch_add(1, Ordering::AcqRel);
+                Ok(account_transport(Arc::new(AtomicUsize::new(generation)), false))
+            },
+            CodexSessionConfig {
+                refresh_interval: Duration::from_secs(600),
+                request_timeout: Duration::from_secs(1),
+                ..CodexSessionConfig::default()
+            },
+            cancelled,
+        );
+        let initial = wait_for_update(&updates, |u| u.quota.five_hour.is_some());
+        assert!(initial.quota.five_hour.is_some(), "Unexpected first snapshot: {initial:?}");
+        assert_eq!(initial.quota.five_hour.unwrap().used_percent, 20.0);
+        std::fs::write(&path, b"synthetic replacement login").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut cleared = false;
+        let mut switched = false;
+        while Instant::now() < deadline {
+            if let Ok(update) = updates.recv_timeout(Duration::from_millis(200)) {
+                if update.reset_account_scoped_state {
+                    cleared =
+                        update.official.account.is_none() && update.quota.five_hour.is_none() && update.usage.is_none();
+                }
+                if update.quota.five_hour.is_some_and(|q| q.used_percent == 70.0) {
+                    switched = true;
+                    break;
+                }
+            }
+        }
+        assert!(cleared && switched, "External login must clear old data and reload the subprocess");
+        assert!(spawns.load(Ordering::Acquire) >= 2);
+        session.request_refresh();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while spawns.load(Ordering::Acquire) < 3 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(spawns.load(Ordering::Acquire) >= 3, "Manual refresh must reload cached authentication too");
+        session.stop();
+        session.join();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn account_read_detects_switch_without_notification_and_never_retains_failed_old_quota() {
+        let epoch = Arc::new(AtomicUsize::new(0));
+        let (transport, events) = account_transport(epoch.clone(), true);
+        let (session, updates) = start_session(
+            transport,
+            events,
+            CodexSessionConfig {
+                refresh_interval: Duration::from_secs(600),
+                request_timeout: Duration::from_secs(1),
+                ..CodexSessionConfig::default()
+            },
+        );
+        let initial = wait_for_update(&updates, |u| u.quota.five_hour.is_some());
+        assert!(initial.quota.five_hour.is_some(), "Unexpected first snapshot: {initial:?}");
+        assert_eq!(initial.quota.five_hour.unwrap().used_percent, 20.0);
+        epoch.store(1, Ordering::Release);
+        session.request_refresh();
+        let update = wait_for_update(&updates, |u| u.reset_account_scoped_state && u.official.account.is_some());
+        assert!(update.reset_account_scoped_state);
+        assert!(update.official.account.is_some());
+        assert!(update.quota.five_hour.is_none());
+        assert!(update.official.account_usage.is_none());
+        assert!(update.usage.is_none());
+        session.stop();
+        session.join();
+    }
 
     #[derive(Clone, Default)]
     struct FakeIo {
