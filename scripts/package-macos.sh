@@ -35,10 +35,30 @@ mkdir -p "$stage/.background"
 cp "$assets/installer-background.png" "$stage/.background/"
 mount='/Volumes/Codex Taskbar'
 test ! -e "$mount" || { echo 'Installer volume already mounted; eject it before building' >&2; exit 1; }
+# Finder/Quick Look 在截图后可能继续持有镜像，Intel runner 尤其容易短暂占用。
+# 只卸载本脚本创建且已确认原先不存在的安装卷；最终镜像仍进行完整校验。
+detach_installer() {
+  osascript - "$mount" <<'APPLESCRIPT' || true
+on run argv
+    tell application "Finder"
+        try
+            close container window of folder ((POSIX file (item 1 of argv)) as alias)
+        end try
+    end tell
+end run
+APPLESCRIPT
+  sync
+  for attempt in 1 2 3 4 5; do
+    if hdiutil detach "$mount"; then return 0; fi
+    echo "Installer volume busy; retry $attempt/5" >&2
+    sleep 2
+  done
+  hdiutil detach -force "$mount"
+}
 rw="$assets/installer-rw.dmg"
 hdiutil create -volname 'Codex Taskbar' -fs HFS+ -srcfolder "$stage" -format UDRW "$rw"
 hdiutil attach "$rw" -nobrowse
-trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+trap 'detach_installer >/dev/null 2>&1 || true' EXIT
 # hdiutil -srcfolder 不保留源目录的卷图标；必须写入已挂载的镜像。
 cp "$app/Contents/Resources/AppIcon.icns" "$mount/.VolumeIcon.icns"
 SetFile -c icnC "$mount/.VolumeIcon.icns"
@@ -54,18 +74,18 @@ SetFile -c icnC "$mount/.VolumeIcon.icns"
 SetFile -a C "$mount"
 test -s "$mount/.VolumeIcon.icns"
 sync
-hdiutil detach "$mount"
+detach_installer
 trap - EXIT
 hdiutil convert "$rw" -format UDZO -o "dist/$name.dmg"
 # 校验最终只读镜像，防止只验证 staging 却遗漏最终打包内容。
 hdiutil attach "dist/$name.dmg" -nobrowse -readonly
-trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+trap 'detach_installer >/dev/null 2>&1 || true' EXIT
 ls -la "$mount"
 test "$(readlink "$mount/Applications")" = /Applications || { echo 'DMG Applications link invalid' >&2; exit 1; }
 test -s "$mount/.DS_Store" || { echo 'DMG Finder layout missing' >&2; exit 1; }
 test -s "$mount/.VolumeIcon.icns" || { echo 'DMG volume icon missing' >&2; exit 1; }
 codesign --verify --deep --strict "$mount/Codex Taskbar.app"
-hdiutil detach "$mount"
+detach_installer
 trap - EXIT
 shasum -a 256 "dist/$name.zip" "dist/$name.dmg" > "dist/SHA256SUMS-macos-$arch.txt"
 printf '%s\n' "$app" > dist/macos-app-path.txt
